@@ -1,0 +1,10 @@
+{
+  "name": "@stackpulse/browser",
+  "version": "0.1.0",
+  "description": "StackPulse browser error tracking SDK",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": ["index.js", "index.d.ts"],
+  "license": "MIT"
+}

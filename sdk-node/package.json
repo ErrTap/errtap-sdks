@@ -1,0 +1,11 @@
+{
+  "name": "@stackpulse/node",
+  "version": "0.1.0",
+  "description": "StackPulse Node.js error tracking SDK",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": ["index.js", "index.d.ts"],
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}
