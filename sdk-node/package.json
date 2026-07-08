@@ -1,7 +1,7 @@
 {
-  "name": "@stackpulse/node",
+  "name": "@errtap/node",
   "version": "0.1.0",
-  "description": "StackPulse Node.js error tracking SDK",
+  "description": "ErrTap Node.js error tracking SDK",
   "type": "module",
   "main": "index.js",
   "types": "index.d.ts",

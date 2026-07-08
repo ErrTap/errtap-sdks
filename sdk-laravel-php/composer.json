@@ -1,6 +1,6 @@
 {
-  "name": "stackpulse/laravel",
-  "description": "StackPulse error tracking for Laravel — reports unhandled exceptions to your StackPulse project.",
+  "name": "errtap/laravel",
+  "description": "ErrTap error tracking for Laravel — reports unhandled exceptions to your ErrTap project.",
   "type": "library",
   "license": "MIT",
   "require": {
@@ -8,13 +8,13 @@
   },
   "autoload": {
     "psr-4": {
-      "StackPulse\\": "src/"
+      "ErrTap\\": "src/"
     }
   },
   "extra": {
     "laravel": {
       "providers": [
-        "StackPulse\\StackPulseServiceProvider"
+        "ErrTap\\ErrTapServiceProvider"
       ]
     }
   }

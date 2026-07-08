@@ -1,19 +1,19 @@
-# @stackpulse/laravel
+# @errtap/laravel
 
-Zero-dependency StackPulse error tracking for Laravel.
+Zero-dependency ErrTap error tracking for Laravel.
 
 ## Install
 
 ```bash
-composer require stackpulse/laravel
+composer require errtap/laravel
 ```
 
 Set env vars:
 
 ```
-STACKPULSE_DSN=your-dsn-here
-STACKPULSE_ENDPOINT=https://your-stackpulse-host/ingest/error
-STACKPULSE_RELEASE=v1.0.0   # optional, enables regression detection
+ERRTAP_DSN=your-dsn-here
+ERRTAP_ENDPOINT=https://your-errtap-host/ingest/error
+ERRTAP_RELEASE=v1.0.0   # optional, enables regression detection
 ```
 
 ## Hook it up (one line)
@@ -22,18 +22,18 @@ STACKPULSE_RELEASE=v1.0.0   # optional, enables regression detection
 
 ```php
 ->withExceptions(function (Illuminate\Foundation\Configuration\Exceptions $exceptions) {
-    $exceptions->reportable(fn (Throwable $e) => StackPulse\StackPulse::captureException($e));
+    $exceptions->reportable(fn (Throwable $e) => ErrTap\ErrTap::captureException($e));
 })
 ```
 
 **Laravel ≤10** — in `App\Exceptions\Handler::register()`:
 
 ```php
-$this->reportable(fn (Throwable $e) => StackPulse\StackPulse::captureException($e));
+$this->reportable(fn (Throwable $e) => ErrTap\ErrTap::captureException($e));
 ```
 
 Manual capture anywhere:
 
 ```php
-StackPulse\StackPulse::captureMessage('something noteworthy');
+ErrTap\ErrTap::captureMessage('something noteworthy');
 ```

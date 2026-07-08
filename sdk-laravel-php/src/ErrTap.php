@@ -1,15 +1,15 @@
 <?php
 
-namespace StackPulse;
+namespace ErrTap;
 
 use Throwable;
 
 /**
- * Zero-dependency StackPulse client. Sends captured exceptions to the
+ * Zero-dependency ErrTap client. Sends captured exceptions to the
  * /ingest/error endpoint with `Authorization: DSN <key>`, matching the
  * JS/Node SDK payload shape. Telemetry never throws into the host app.
  */
-class StackPulse
+class ErrTap
 {
     private static ?array $cfg = null;
 

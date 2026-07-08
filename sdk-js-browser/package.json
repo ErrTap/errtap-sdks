@@ -1,7 +1,7 @@
 {
-  "name": "@stackpulse/browser",
+  "name": "@errtap/browser",
   "version": "0.1.0",
-  "description": "StackPulse browser error tracking SDK",
+  "description": "ErrTap browser error tracking SDK",
   "type": "module",
   "main": "index.js",
   "types": "index.d.ts",
