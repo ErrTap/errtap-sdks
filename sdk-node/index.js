@@ -1,4 +1,12 @@
+// GENERATED FILE — do not edit. Source: sdk/sdk-js (core.js + node.js).
+// Regenerate with: node sdk/sync.mjs
+
+// Shared core for the browser and Node entrypoints. Each entry calls configure()
+// with an environment-specific context provider and fetch options, then registers
+// its own global error handlers.
 let cfg = null;
+let context = () => ({});
+let fetchOpts = {};
 /** @type {{ level: string, message: string, data?: object, ts: number }[]} */
 const breadcrumbs = [];
 const BREADCRUMB_MAX = 20;
@@ -48,10 +56,7 @@ export function resolveDsn(dsn, endpointOverride) {
   };
 }
 
-/**
- * @param {{ dsn: string, endpoint?: string, environment?: string, release?: string, tags?: object, exitOnFatal?: boolean }} options
- */
-export function init(options) {
+export function configure(options, contextFn = () => ({}), extraFetchOpts = {}) {
   const resolved = resolveDsn(options.dsn, options.endpoint);
   if (!resolved) {
     cfg = null;
@@ -59,21 +64,13 @@ export function init(options) {
   }
   cfg = {
     environment: 'production',
-    exitOnFatal: true,
     ...options,
     dsn: resolved.key,
     endpoint: resolved.endpoint,
     logEndpoint: resolved.logEndpoint,
   };
-  process.on('uncaughtException', async (err) => {
-    await captureException(err);
-    if (cfg.exitOnFatal) process.exit(1);
-  });
-  process.on('unhandledRejection', (reason) => {
-    reason instanceof Error
-      ? captureException(reason)
-      : captureMessage(`Unhandled rejection: ${String(reason)}`);
-  });
+  context = contextFn;
+  fetchOpts = extraFetchOpts;
 }
 
 function pushBreadcrumb(level, message, data) {
@@ -106,44 +103,40 @@ export function captureMessage(message, extra = {}) {
   return sendError(withBreadcrumbs({ message, type: 'Message', ...extra }));
 }
 
-async function sendError(payload) {
+function sendError(payload) {
   if (!cfg) return;
-  try {
-    await fetch(cfg.endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `DSN ${cfg.dsn}` },
-      body: JSON.stringify({
-        environment: cfg.environment,
-        release: cfg.release,
-        tags: cfg.tags,
-        context: { node: process.version, platform: process.platform },
-        ...payload,
-      }),
-    });
-  } catch {
+  return fetch(cfg.endpoint, {
+    method: 'POST',
+    ...fetchOpts,
+    headers: { 'Content-Type': 'application/json', Authorization: `DSN ${cfg.dsn}` },
+    body: JSON.stringify({
+      environment: cfg.environment,
+      release: cfg.release,
+      tags: cfg.tags,
+      ...context(),
+      ...payload,
+    }),
     // never crash the host app over telemetry
-  }
+  }).catch(() => {});
 }
 
-async function sendLog(level, message, data) {
+function sendLog(level, message, data) {
   if (!cfg?.logEndpoint) return;
   pushBreadcrumb(level, message, data);
-  try {
-    await fetch(cfg.logEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `DSN ${cfg.dsn}` },
-      body: JSON.stringify({
-        level,
-        message: String(message).slice(0, 8192),
-        environment: cfg.environment,
-        release: cfg.release,
-        tags: cfg.tags,
-        context: data ? { ...data, node: process.version, platform: process.platform } : { node: process.version, platform: process.platform },
-      }),
-    });
-  } catch {
-    // never crash the host app over telemetry
-  }
+  return fetch(cfg.logEndpoint, {
+    method: 'POST',
+    ...fetchOpts,
+    headers: { 'Content-Type': 'application/json', Authorization: `DSN ${cfg.dsn}` },
+    body: JSON.stringify({
+      level,
+      message: String(message).slice(0, 8192),
+      environment: cfg.environment,
+      release: cfg.release,
+      tags: cfg.tags,
+      context: data,
+      ...context(),
+    }),
+  }).catch(() => {});
 }
 
 export const logger = {
@@ -153,3 +146,20 @@ export const logger = {
   warning: (message, data) => sendLog('warning', message, data),
   error: (message, data) => sendLog('error', message, data),
 };
+
+/**
+ * @param {{ dsn: string, endpoint?: string, environment?: string, release?: string, tags?: object, exitOnFatal?: boolean }} options
+ */
+export function init(options = {}) {
+  const exitOnFatal = options.exitOnFatal !== false;
+  configure(options, () => ({ context: { node: process.version, platform: process.platform } }));
+  process.on('uncaughtException', async (err) => {
+    await captureException(err);
+    if (exitOnFatal) process.exit(1);
+  });
+  process.on('unhandledRejection', (reason) => {
+    reason instanceof Error
+      ? captureException(reason)
+      : captureMessage(`Unhandled rejection: ${String(reason)}`);
+  });
+}

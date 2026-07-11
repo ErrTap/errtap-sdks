@@ -1,4 +1,12 @@
+// GENERATED FILE — do not edit. Source: sdk/sdk-js (core.js + browser.js).
+// Regenerate with: node sdk/sync.mjs
+
+// Shared core for the browser and Node entrypoints. Each entry calls configure()
+// with an environment-specific context provider and fetch options, then registers
+// its own global error handlers.
 let cfg = null;
+let context = () => ({});
+let fetchOpts = {};
 /** @type {{ level: string, message: string, data?: object, ts: number }[]} */
 const breadcrumbs = [];
 const BREADCRUMB_MAX = 20;
@@ -48,10 +56,7 @@ export function resolveDsn(dsn, endpointOverride) {
   };
 }
 
-/**
- * @param {{ dsn: string, endpoint?: string, environment?: string, release?: string, tags?: object }} options
- */
-export function init(options) {
+export function configure(options, contextFn = () => ({}), extraFetchOpts = {}) {
   const resolved = resolveDsn(options.dsn, options.endpoint);
   if (!resolved) {
     cfg = null;
@@ -64,15 +69,8 @@ export function init(options) {
     endpoint: resolved.endpoint,
     logEndpoint: resolved.logEndpoint,
   };
-  window.addEventListener('error', (e) => {
-    if (e.error) captureException(e.error);
-    else captureMessage(String(e.message || 'Unknown error'), { url: e.filename });
-  });
-  window.addEventListener('unhandledrejection', (e) => {
-    e.reason instanceof Error
-      ? captureException(e.reason)
-      : captureMessage(`Unhandled rejection: ${String(e.reason)}`);
-  });
+  context = contextFn;
+  fetchOpts = extraFetchOpts;
 }
 
 function pushBreadcrumb(level, message, data) {
@@ -91,7 +89,7 @@ function withBreadcrumbs(payload) {
 
 /** @param {Error} error */
 export function captureException(error, extra = {}) {
-  sendError(
+  return sendError(
     withBreadcrumbs({
       message: error.message || String(error),
       type: error.name || 'Error',
@@ -102,47 +100,42 @@ export function captureException(error, extra = {}) {
 }
 
 export function captureMessage(message, extra = {}) {
-  sendError(withBreadcrumbs({ message, type: 'Message', ...extra }));
+  return sendError(withBreadcrumbs({ message, type: 'Message', ...extra }));
 }
 
 function sendError(payload) {
   if (!cfg) return;
-  const body = JSON.stringify({
-    environment: cfg.environment,
-    release: cfg.release,
-    tags: cfg.tags,
-    url: typeof location !== 'undefined' ? location.href : undefined,
-    context: { userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined },
-    ...payload,
-  });
-  // ponytail: sendBeacon can't carry the Authorization header, so keepalive fetch is the send path
-  fetch(cfg.endpoint, {
+  return fetch(cfg.endpoint, {
     method: 'POST',
-    keepalive: true,
+    ...fetchOpts,
     headers: { 'Content-Type': 'application/json', Authorization: `DSN ${cfg.dsn}` },
-    body,
+    body: JSON.stringify({
+      environment: cfg.environment,
+      release: cfg.release,
+      tags: cfg.tags,
+      ...context(),
+      ...payload,
+    }),
+    // never crash the host app over telemetry
   }).catch(() => {});
 }
 
 function sendLog(level, message, data) {
   if (!cfg?.logEndpoint) return;
   pushBreadcrumb(level, message, data);
-  const body = JSON.stringify({
-    level,
-    message: String(message).slice(0, 8192),
-    environment: cfg.environment,
-    release: cfg.release,
-    tags: cfg.tags,
-    url: typeof location !== 'undefined' ? location.href : undefined,
-    context: data
-      ? { ...data, userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined }
-      : { userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined },
-  });
-  fetch(cfg.logEndpoint, {
+  return fetch(cfg.logEndpoint, {
     method: 'POST',
-    keepalive: true,
+    ...fetchOpts,
     headers: { 'Content-Type': 'application/json', Authorization: `DSN ${cfg.dsn}` },
-    body,
+    body: JSON.stringify({
+      level,
+      message: String(message).slice(0, 8192),
+      environment: cfg.environment,
+      release: cfg.release,
+      tags: cfg.tags,
+      context: data,
+      ...context(),
+    }),
   }).catch(() => {});
 }
 
@@ -153,3 +146,27 @@ export const logger = {
   warning: (message, data) => sendLog('warning', message, data),
   error: (message, data) => sendLog('error', message, data),
 };
+
+/**
+ * @param {{ dsn: string, endpoint?: string, environment?: string, release?: string, tags?: object }} options
+ */
+export function init(options) {
+  configure(
+    options,
+    () => ({
+      url: typeof location !== 'undefined' ? location.href : undefined,
+      context: { userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined },
+    }),
+    // ponytail: sendBeacon can't carry the Authorization header, so keepalive fetch is the send path
+    { keepalive: true },
+  );
+  window.addEventListener('error', (e) => {
+    if (e.error) captureException(e.error);
+    else captureMessage(String(e.message || 'Unknown error'), { url: e.filename });
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    e.reason instanceof Error
+      ? captureException(e.reason)
+      : captureMessage(`Unhandled rejection: ${String(e.reason)}`);
+  });
+}
