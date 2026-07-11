@@ -1,6 +1,6 @@
 {
   "name": "@errtap/node",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "ErrTap Node.js error tracking SDK",
   "type": "module",
   "main": "index.js",
