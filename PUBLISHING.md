@@ -1,11 +1,12 @@
 # Publishing the ErrTap SDKs
 
-Three SDKs, two registries:
+Four SDKs, two registries:
 
 | Package | Dir | Registry | Install |
 |---|---|---|---|
 | `@errtap/browser` | `sdk/sdk-js-browser` | npm | `npm i @errtap/browser` |
 | `@errtap/node` | `sdk/sdk-node` | npm | `npm i @errtap/node` |
+| `@errtap/nestjs` | `sdk/sdk-nestjs` | npm | `npm i @errtap/nestjs` |
 | `errtap/laravel` | `sdk/sdk-laravel-php` | Packagist | `composer require errtap/laravel` |
 
 > **No build step.** The npm packages ship the hand-written `index.js` (ESM) + `index.d.ts`
@@ -33,6 +34,7 @@ Scoped packages are private by default, so **the first publish of each needs `--
 # from the repo root — workspaces let you target by name
 npm publish -w @errtap/browser --access public
 npm publish -w @errtap/node --access public
+npm publish -w @errtap/nestjs --access public
 ```
 
 ### Releasing an update
@@ -87,5 +89,5 @@ composer show errtap/laravel                  # after `composer require` in a te
 ```
 
 ## Versioning note
-All three start at **0.1.0**. Keep them independent — a browser-SDK fix doesn't need a Node-SDK
+All npm SDKs start at **0.1.0**. Keep them independent — a browser-SDK fix doesn't need a Node-SDK
 bump. Match the npm and Packagist version only when it's genuinely the same release.
