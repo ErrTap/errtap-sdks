@@ -1,9 +1,9 @@
-import { configure, captureException, captureMessage } from './core.js';
+import { configure, captureException, captureMessage, logger, resolveDsn } from './core.js';
 
-export { captureException, captureMessage };
+export { captureException, captureMessage, logger, resolveDsn };
 
 /**
- * @param {{ dsn: string, endpoint: string, environment?: string, release?: string, tags?: object }} options
+ * @param {{ dsn: string, endpoint?: string, environment?: string, release?: string, tags?: object }} options
  */
 export function init(options) {
   configure(

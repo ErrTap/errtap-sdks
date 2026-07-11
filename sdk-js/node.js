@@ -1,9 +1,9 @@
-import { configure, captureException, captureMessage } from './core.js';
+import { configure, captureException, captureMessage, logger, resolveDsn } from './core.js';
 
-export { captureException, captureMessage };
+export { captureException, captureMessage, logger, resolveDsn };
 
 /**
- * @param {{ dsn: string, endpoint: string, environment?: string, release?: string, tags?: object, exitOnFatal?: boolean }} options
+ * @param {{ dsn: string, endpoint?: string, environment?: string, release?: string, tags?: object, exitOnFatal?: boolean }} options
  */
 export function init(options = {}) {
   const exitOnFatal = options.exitOnFatal !== false;

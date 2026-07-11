@@ -25,14 +25,22 @@ class ErrTapServiceProvider extends ServiceProvider
         if (!$dsn) {
             return;
         }
-        ErrTap::init([
+        // ERRTAP_ENDPOINT is optional when ERRTAP_DSN is a URL DSN (https://et_…@host)
+        $opts = [
             'dsn' => $dsn,
-            'endpoint' => env('ERRTAP_ENDPOINT', 'http://localhost:4000/ingest/error'),
             'environment' => env('ERRTAP_ENV', env('APP_ENV', 'production')),
             'release' => env('ERRTAP_RELEASE'),
             'slowQueryMs' => (float) env('ERRTAP_SLOW_QUERY_MS', 500),
             'n1Threshold' => (int) env('ERRTAP_N1_THRESHOLD', 10),
-        ]);
+        ];
+        $endpoint = env('ERRTAP_ENDPOINT');
+        if ($endpoint) {
+            $opts['endpoint'] = $endpoint;
+        } elseif (!str_contains($dsn, '@')) {
+            // bare key without URL: keep previous default so existing .env still works
+            $opts['endpoint'] = 'http://localhost:4000/ingest/error';
+        }
+        ErrTap::init($opts);
 
         // DB monitoring: slow queries + N+1 detection (ERRTAP_DB_MONITOR=false to disable)
         if (env('ERRTAP_DB_MONITOR', true) && class_exists(\Illuminate\Support\Facades\DB::class)) {
