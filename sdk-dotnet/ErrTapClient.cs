@@ -21,22 +21,26 @@ public sealed class ErrTapClient : IDisposable
 
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
-    private readonly string _dsnKey;
-    private readonly string _endpoint;
-    private readonly string _logEndpoint;
+    // null when the DSN didn't resolve — the client becomes a no-op, matching every
+    // other ErrTap SDK: a misconfigured env var must never crash the host app.
+    private readonly string? _dsnKey;
+    private readonly string? _endpoint;
+    private readonly string? _logEndpoint;
     private readonly string _environment;
     private readonly string? _release;
     private readonly IDictionary<string, object?>? _tags;
     private readonly ConcurrentQueue<object> _breadcrumbs = new();
 
+    /// <summary>True when the DSN resolved and events will actually be sent.</summary>
+    public bool Enabled => _dsnKey is not null;
+
     public ErrTapClient(ErrTapOptions options, HttpClient? httpClient = null)
     {
-        var resolved = DsnResolver.Resolve(options.Dsn, options.Endpoint)
-            ?? throw new ArgumentException("Invalid ErrTap DSN. Use a URL DSN (https://et_key@host) or a bare key with Endpoint.");
+        var resolved = DsnResolver.Resolve(options.Dsn, options.Endpoint);
 
-        _dsnKey = resolved.Key;
-        _endpoint = resolved.Endpoint;
-        _logEndpoint = resolved.LogEndpoint;
+        _dsnKey = resolved?.Key;
+        _endpoint = resolved?.Endpoint;
+        _logEndpoint = resolved?.LogEndpoint;
         _environment = options.Environment;
         _release = options.Release;
         _tags = options.Tags;
@@ -78,8 +82,9 @@ public sealed class ErrTapClient : IDisposable
 
     public void Log(string level, string message, IDictionary<string, object?>? data = null)
     {
+        if (_logEndpoint is null) return;
         PushBreadcrumb(level, message, data);
-        PostJson(_logEndpoint, new Dictionary<string, object?>
+        PostJson(_logEndpoint!, new Dictionary<string, object?>
         {
             ["level"] = level,
             ["message"] = Truncate(message, 8192),
@@ -103,6 +108,7 @@ public sealed class ErrTapClient : IDisposable
 
     private void SendError(Dictionary<string, object?> payload)
     {
+        if (_endpoint is null) return;
         var crumbs = DrainBreadcrumbs();
         var context = MergeDict(
             new Dictionary<string, object?>
@@ -120,7 +126,7 @@ public sealed class ErrTapClient : IDisposable
         payload["tags"] ??= _tags;
         payload["context"] = context;
 
-        PostJson(_endpoint, payload);
+        PostJson(_endpoint!, payload);
     }
 
     private void PushBreadcrumb(string level, string message, IDictionary<string, object?>? data)
