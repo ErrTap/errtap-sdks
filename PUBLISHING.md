@@ -1,6 +1,6 @@
 # Publishing the ErrTap SDKs
 
-Five npm packages (+ Laravel on Packagist):
+Six npm packages (+ Laravel on Packagist):
 
 | Package | Dir | Registry | Install |
 |---|---|---|---|
@@ -8,6 +8,7 @@ Five npm packages (+ Laravel on Packagist):
 | `@errtap/node` | `sdk/sdk-node` | npm | `npm i @errtap/node` |
 | `@errtap/nestjs` | `sdk/sdk-nestjs` | npm | `npm i @errtap/nestjs` |
 | `@errtap/next` | `sdk/sdk-next` | npm | `npm i @errtap/next` |
+| `@errtap/react-native` | `sdk/sdk-react-native` | npm | `npm i @errtap/react-native` |
 | `errtap/laravel` | `sdk/sdk-laravel-php` | Packagist | `composer require errtap/laravel` |
 
 > **No build step.** The npm packages ship the hand-written `index.js` (ESM) + `index.d.ts`
@@ -37,6 +38,7 @@ npm publish -w @errtap/browser --access public
 npm publish -w @errtap/node --access public
 npm publish -w @errtap/nestjs --access public
 npm publish -w @errtap/next --access public
+npm publish -w @errtap/react-native --access public
 ```
 
 ### Releasing an update
