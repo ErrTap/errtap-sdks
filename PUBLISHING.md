@@ -1,15 +1,18 @@
 # Publishing the ErrTap SDKs
 
-Six npm packages (+ Laravel on Packagist):
+Per-package steps live in each SDK’s `DEPLOY.md`. This file is the shared overview.
 
-| Package | Dir | Registry | Install |
+| Package | Dir | Registry | Deploy guide |
 |---|---|---|---|
-| `@errtap/browser` | `sdk/sdk-js-browser` | npm | `npm i @errtap/browser` |
-| `@errtap/node` | `sdk/sdk-node` | npm | `npm i @errtap/node` |
-| `@errtap/nestjs` | `sdk/sdk-nestjs` | npm | `npm i @errtap/nestjs` |
-| `@errtap/next` | `sdk/sdk-next` | npm | `npm i @errtap/next` |
-| `@errtap/react-native` | `sdk/sdk-react-native` | npm | `npm i @errtap/react-native` |
-| `errtap/laravel` | `sdk/sdk-laravel-php` | Packagist | `composer require errtap/laravel` |
+| `@errtap/browser` | `sdk/sdk-js-browser` | npm | [DEPLOY.md](./sdk-js-browser/DEPLOY.md) |
+| `@errtap/node` | `sdk/sdk-node` | npm | [DEPLOY.md](./sdk-node/DEPLOY.md) |
+| `@errtap/nestjs` | `sdk/sdk-nestjs` | npm | [DEPLOY.md](./sdk-nestjs/DEPLOY.md) |
+| `@errtap/next` | `sdk/sdk-next` | npm | [DEPLOY.md](./sdk-next/DEPLOY.md) |
+| `@errtap/react-native` | `sdk/sdk-react-native` | npm | [DEPLOY.md](./sdk-react-native/DEPLOY.md) |
+| `errtap/laravel` | `sdk/sdk-laravel-php` | Packagist | [DEPLOY.md](./sdk-laravel-php/DEPLOY.md) |
+| `ErrTap` | `sdk/sdk-dotnet` | NuGet | [DEPLOY.md](./sdk-dotnet/DEPLOY.md) |
+
+> `sdk/sdk-js` is shared source only — not published.
 
 > **No build step.** The npm packages ship the hand-written `index.js` (ESM) + `index.d.ts`
 > as-is — the `files` field already restricts the tarball to just those two. Nothing to compile.
