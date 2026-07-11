@@ -30,6 +30,16 @@ class ErrTapServiceProvider extends ServiceProvider
             'endpoint' => env('ERRTAP_ENDPOINT', 'http://localhost:4000/ingest/error'),
             'environment' => env('ERRTAP_ENV', env('APP_ENV', 'production')),
             'release' => env('ERRTAP_RELEASE'),
+            'slowQueryMs' => (float) env('ERRTAP_SLOW_QUERY_MS', 500),
+            'n1Threshold' => (int) env('ERRTAP_N1_THRESHOLD', 10),
         ]);
+
+        // DB monitoring: slow queries + N+1 detection (ERRTAP_DB_MONITOR=false to disable)
+        if (env('ERRTAP_DB_MONITOR', true) && class_exists(\Illuminate\Support\Facades\DB::class)) {
+            \Illuminate\Support\Facades\DB::listen(function ($query) {
+                ErrTap::recordQuery($query->sql, (float) $query->time, $query->connectionName ?? null);
+            });
+            $this->app->terminating(fn () => ErrTap::flushQueryStats());
+        }
     }
 }
