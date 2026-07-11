@@ -5,6 +5,25 @@
   "type": "module",
   "main": "index.js",
   "types": "index.d.ts",
-  "files": ["index.js", "index.d.ts"],
-  "license": "MIT"
+  "files": [
+    "index.js",
+    "index.d.ts"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ErrTap/observer-app.git",
+    "directory": "sdk/sdk-js-browser"
+  },
+  "homepage": "https://docs.errtap.com",
+  "bugs": {
+    "url": "https://github.com/ErrTap/observer-app/issues"
+  },
+  "keywords": [
+    "error-tracking",
+    "monitoring",
+    "observability",
+    "errtap",
+    "browser"
+  ]
 }

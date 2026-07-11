@@ -24,8 +24,10 @@ Per-package steps live in each SDK’s `DEPLOY.md`. This file is the shared over
 **npm** — you need an account that owns the `@errtap` scope:
 ```bash
 npm login
-npm org create errtap        # once, if the scope doesn't exist (or publish under your own user scope)
 ```
+Then create the org **on the website** (the CLI can't): https://www.npmjs.com/org/create →
+name `errtap` → pick the free "Unlimited public packages" plan. Skip if the scope already exists
+and your account is a member.
 
 **Packagist** — a free account at https://packagist.org, linked to GitHub.
 

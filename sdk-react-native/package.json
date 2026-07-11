@@ -5,9 +5,28 @@
   "type": "module",
   "main": "index.js",
   "types": "index.d.ts",
-  "files": ["index.js", "index.d.ts"],
+  "files": [
+    "index.js",
+    "index.d.ts"
+  ],
   "license": "MIT",
   "peerDependencies": {
     "react-native": ">=0.72.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ErrTap/observer-app.git",
+    "directory": "sdk/sdk-react-native"
+  },
+  "homepage": "https://docs.errtap.com",
+  "bugs": {
+    "url": "https://github.com/ErrTap/observer-app/issues"
+  },
+  "keywords": [
+    "error-tracking",
+    "monitoring",
+    "observability",
+    "errtap",
+    "react-native"
+  ]
 }
