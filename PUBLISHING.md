@@ -85,13 +85,31 @@ Fine for a first release; Option A is less error-prone long-term.
 
 ---
 
+---
+
+## Publishing the .NET SDK (NuGet)
+
+The package lives at `sdk/sdk-dotnet` (`PackageId: ErrTap`). Build and push a `.nupkg`:
+
+```bash
+cd sdk/sdk-dotnet
+dotnet pack -c Release
+dotnet nuget push bin/Release/ErrTap.0.1.0.nupkg --api-key $NUGET_API_KEY --source https://api.nuget.org/v3/index.json
+```
+
+Bump `<Version>` in `ErrTap.csproj` for each release. Same subtree-split option as Laravel if you
+want a standalone `errtap-dotnet` repo for NuGet Source Link / symbols.
+
+---
+
 ## Verify a published package
 
 ```bash
 npm view @errtap/browser version              # npm
 composer show errtap/laravel                  # after `composer require` in a test project
+dotnet package search ErrTap                  # NuGet
 ```
 
 ## Versioning note
 All npm SDKs start at **0.1.0**. Keep them independent — a browser-SDK fix doesn't need a Node-SDK
-bump. Match the npm and Packagist version only when it's genuinely the same release.
+bump. Match the npm and Packagist/NuGet version only when it's genuinely the same release.

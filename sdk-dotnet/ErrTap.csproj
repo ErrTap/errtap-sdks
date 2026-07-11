@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>ErrTap</RootNamespace>
+    <AssemblyName>ErrTap</AssemblyName>
+    <PackageId>ErrTap</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>ErrTap</Authors>
+    <Description>ErrTap error tracking for ASP.NET Core — reports unhandled exceptions to your ErrTap project.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>errtap;error-tracking;aspnetcore;observability</PackageTags>
+    <RepositoryUrl>https://github.com/errtap/errtap</RepositoryUrl>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+</Project>
