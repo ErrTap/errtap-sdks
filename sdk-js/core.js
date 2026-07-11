@@ -7,6 +7,9 @@ let fetchOpts = {};
 /** @type {{ level: string, message: string, data?: object, ts: number }[]} */
 const breadcrumbs = [];
 const BREADCRUMB_MAX = 20;
+const PAYLOAD_MAX_BYTES = 256 * 1024;
+const TRANSPORT_TIMEOUT_MS = 10_000;
+const TRANSPORT_RETRIES = 2;
 
 /**
  * Parse a Sentry-style URL DSN (`https://et_key@host[:port]`) or a bare key.
@@ -75,6 +78,38 @@ function pushBreadcrumb(level, message, data) {
   if (breadcrumbs.length > BREADCRUMB_MAX) breadcrumbs.shift();
 }
 
+function mergeTags(...sources) {
+  const out = {};
+  for (const src of sources) {
+    if (!src || typeof src !== 'object' || Array.isArray(src)) continue;
+    Object.assign(out, src);
+  }
+  return out;
+}
+
+function mergeContext(...sources) {
+  const out = {};
+  for (const src of sources) {
+    if (!src || typeof src !== 'object' || Array.isArray(src)) continue;
+    for (const [key, value] of Object.entries(src)) {
+      const existing = out[key];
+      if (
+        value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        existing &&
+        typeof existing === 'object' &&
+        !Array.isArray(existing)
+      ) {
+        out[key] = { ...existing, ...value };
+      } else {
+        out[key] = value;
+      }
+    }
+  }
+  return out;
+}
+
 function withBreadcrumbs(payload) {
   if (!breadcrumbs.length) return payload;
   const existing = payload.context && typeof payload.context === 'object' ? payload.context : {};
@@ -82,6 +117,53 @@ function withBreadcrumbs(payload) {
     ...payload,
     context: { ...existing, breadcrumbs: breadcrumbs.slice() },
   };
+}
+
+function buildEnvelope(payload) {
+  const runtime = context();
+  const body = withBreadcrumbs({
+    environment: cfg.environment,
+    release: cfg.release,
+    ...runtime,
+    ...payload,
+    tags: mergeTags(cfg.tags, runtime.tags, payload.tags),
+    context: mergeContext(runtime.context, payload.context),
+  });
+  if (typeof body.message === 'string' && body.message.length > 8192) {
+    body.message = body.message.slice(0, 8192);
+  }
+  if (typeof body.stacktrace === 'string' && body.stacktrace.length > 32_768) {
+    body.stacktrace = body.stacktrace.slice(0, 32_768);
+  }
+  let json = JSON.stringify(body);
+  if (json.length > PAYLOAD_MAX_BYTES) {
+    json = JSON.stringify({
+      ...body,
+      message: String(body.message ?? '').slice(0, 4096),
+      stacktrace: typeof body.stacktrace === 'string' ? body.stacktrace.slice(0, 8192) : undefined,
+      truncated: true,
+      originalBytes: json.length,
+    }).slice(0, PAYLOAD_MAX_BYTES);
+  }
+  return json;
+}
+
+async function sendWithRetry(url, init) {
+  for (let attempt = 0; attempt <= TRANSPORT_RETRIES; attempt++) {
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), TRANSPORT_TIMEOUT_MS) : null;
+    try {
+      const res = await fetch(url, { ...init, signal: controller?.signal });
+      if (timer) clearTimeout(timer);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return;
+    } catch {
+      if (timer) clearTimeout(timer);
+      if (attempt < TRANSPORT_RETRIES) {
+        await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+      }
+    }
+  }
 }
 
 /** @param {Error} error */
@@ -102,25 +184,18 @@ export function captureMessage(message, extra = {}) {
 
 function sendError(payload) {
   if (!cfg) return;
-  return fetch(cfg.endpoint, {
+  return sendWithRetry(cfg.endpoint, {
     method: 'POST',
     ...fetchOpts,
     headers: { 'Content-Type': 'application/json', Authorization: `DSN ${cfg.dsn}` },
-    body: JSON.stringify({
-      environment: cfg.environment,
-      release: cfg.release,
-      tags: cfg.tags,
-      ...context(),
-      ...payload,
-    }),
-    // never crash the host app over telemetry
-  }).catch(() => {});
+    body: buildEnvelope(payload),
+  });
 }
 
 function sendLog(level, message, data) {
   if (!cfg?.logEndpoint) return;
   pushBreadcrumb(level, message, data);
-  return fetch(cfg.logEndpoint, {
+  return sendWithRetry(cfg.logEndpoint, {
     method: 'POST',
     ...fetchOpts,
     headers: { 'Content-Type': 'application/json', Authorization: `DSN ${cfg.dsn}` },
@@ -129,11 +204,11 @@ function sendLog(level, message, data) {
       message: String(message).slice(0, 8192),
       environment: cfg.environment,
       release: cfg.release,
-      tags: cfg.tags,
-      context: data,
+      tags: mergeTags(cfg.tags, context().tags),
+      context: mergeContext(context().context, data),
       ...context(),
     }),
-  }).catch(() => {});
+  });
 }
 
 export const logger = {
@@ -143,3 +218,6 @@ export const logger = {
   warning: (message, data) => sendLog('warning', message, data),
   error: (message, data) => sendLog('error', message, data),
 };
+
+// test helpers (not part of the public API surface for apps)
+export const __test = { mergeContext, mergeTags, buildEnvelope };
