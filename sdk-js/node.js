@@ -14,18 +14,24 @@ export function init(options = {}) {
   const exitOnFatal = options.exitOnFatal !== false;
   configure(options, () => ({ context: { node: process.version, platform: process.platform } }));
 
-  if (uncaughtHandler) process.removeListener('uncaughtException', uncaughtHandler);
-  if (rejectionHandler) process.removeListener('unhandledRejection', rejectionHandler);
+  // Edge / workers expose a partial `process` without EventEmitter APIs.
+  const canHookProcess =
+    typeof process !== 'undefined' && typeof process.on === 'function';
 
-  uncaughtHandler = async (err) => {
-    await captureException(err);
-    if (exitOnFatal) process.exit(1);
-  };
-  rejectionHandler = (reason) => {
-    reason instanceof Error
-      ? captureException(reason)
-      : captureMessage(`Unhandled rejection: ${String(reason)}`);
-  };
-  process.on('uncaughtException', uncaughtHandler);
-  process.on('unhandledRejection', rejectionHandler);
+  if (canHookProcess) {
+    if (uncaughtHandler) process.removeListener('uncaughtException', uncaughtHandler);
+    if (rejectionHandler) process.removeListener('unhandledRejection', rejectionHandler);
+
+    uncaughtHandler = async (err) => {
+      await captureException(err);
+      if (exitOnFatal && typeof process.exit === 'function') process.exit(1);
+    };
+    rejectionHandler = (reason) => {
+      reason instanceof Error
+        ? captureException(reason)
+        : captureMessage(`Unhandled rejection: ${String(reason)}`);
+    };
+    process.on('uncaughtException', uncaughtHandler);
+    process.on('unhandledRejection', rejectionHandler);
+  }
 }

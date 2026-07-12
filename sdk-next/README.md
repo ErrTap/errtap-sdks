@@ -7,10 +7,10 @@ npm i @errtap/next
 ```
 
 ```ts
-// instrumentation.ts (server)
-import { init } from '@errtap/next/server';
-
+// instrumentation.ts (server — Node only; Edge has no process.on)
 export async function register() {
+  if (process.env.NEXT_RUNTIME !== 'nodejs') return;
+  const { init } = await import('@errtap/next/server');
   init({
     dsn: process.env.ERRTAP_DSN!, // https://et_…@host
     environment: process.env.NODE_ENV,
