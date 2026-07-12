@@ -230,6 +230,10 @@ class ErrTap
         ], $payload));
     }
 
+    // matches sdk-node/sdk-js-browser's retry count, so a transient network blip
+    // doesn't silently drop the event in PHP only.
+    private const TRANSPORT_RETRIES = 2;
+
     private static function postJson(string $url, array $payload): void
     {
         $cfg = self::$cfg;
@@ -237,22 +241,40 @@ class ErrTap
             return;
         }
         $body = json_encode($payload);
-        try {
-            $ch = curl_init($url);
-            curl_setopt_array($ch, [
-                CURLOPT_POST => true,
-                CURLOPT_POSTFIELDS => $body,
-                CURLOPT_HTTPHEADER => [
-                    'Content-Type: application/json',
-                    'Authorization: DSN ' . $cfg['dsn'],
-                ],
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT => 5,
-            ]);
-            curl_exec($ch);
-            curl_close($ch);
-        } catch (Throwable $ignored) {
-            // never crash the host app over telemetry
+        for ($attempt = 0; $attempt <= self::TRANSPORT_RETRIES; $attempt++) {
+            try {
+                if (self::sendOnce($url, $body, $cfg['dsn'])) {
+                    return;
+                }
+            } catch (Throwable $ignored) {
+                // never crash the host app over telemetry
+            }
+            if ($attempt < self::TRANSPORT_RETRIES) {
+                usleep(200_000 * ($attempt + 1));
+            }
         }
+    }
+
+    private static function sendOnce(string $url, string $body, string $dsn): bool
+    {
+        $ch = curl_init($url);
+        if ($ch === false) {
+            return false;
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $body,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'Authorization: DSN ' . $dsn,
+            ],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 5,
+        ]);
+        curl_exec($ch);
+        $failed = curl_errno($ch) !== 0;
+        $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        return !$failed && $status >= 200 && $status < 300;
     }
 }

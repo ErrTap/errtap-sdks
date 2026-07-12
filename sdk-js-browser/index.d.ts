@@ -21,13 +21,13 @@ export function resolveDsn(
 ): { key: string; endpoint: string; logEndpoint: string } | null;
 
 export function init(options: ErrTapOptions): void;
-export function captureException(error: Error, extra?: CaptureExtra): void;
-export function captureMessage(message: string, extra?: CaptureExtra): void;
+export function captureException(error: Error, extra?: CaptureExtra): Promise<void>;
+export function captureMessage(message: string, extra?: CaptureExtra): Promise<void>;
 
 export const logger: {
-  debug(message: string, data?: Record<string, unknown>): void;
-  info(message: string, data?: Record<string, unknown>): void;
-  warn(message: string, data?: Record<string, unknown>): void;
-  warning(message: string, data?: Record<string, unknown>): void;
-  error(message: string, data?: Record<string, unknown>): void;
+  debug(message: string, data?: Record<string, unknown>): Promise<void>;
+  info(message: string, data?: Record<string, unknown>): Promise<void>;
+  warn(message: string, data?: Record<string, unknown>): Promise<void>;
+  warning(message: string, data?: Record<string, unknown>): Promise<void>;
+  error(message: string, data?: Record<string, unknown>): Promise<void>;
 };
