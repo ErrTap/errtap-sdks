@@ -59,9 +59,18 @@ async function main() {
   const arg = process.argv[2];
   const nextDir = arg && !arg.startsWith('-') ? arg : '.next';
 
+  const staticDir = join(nextDir, 'static');
+  const mapPaths = await walk(staticDir).catch(() => []);
+  if (!mapPaths.length) {
+    console.warn(`[errtap] no .js.map files under ${staticDir} — is productionBrowserSourceMaps enabled?`);
+    return;
+  }
+
   if (!dsn || !release) {
-    // Don't fail local builds that aren't wired for uploads.
-    console.warn('[errtap] set a DSN and a release to upload sourcemaps — skipping.');
+    await Promise.all(mapPaths.map((p) => unlink(p).catch(() => {})));
+    console.warn(
+      `[errtap] DSN/release missing — removed ${mapPaths.length} sourcemaps without uploading so source is not published.`,
+    );
     return;
   }
 
@@ -70,13 +79,6 @@ async function main() {
     throw new Error('[errtap] could not resolve DSN — use a URL DSN or set ERRTAP_ENDPOINT for a bare key');
   }
   const uploadUrl = new URL('/ingest/sourcemaps', resolved.endpoint).toString();
-
-  const staticDir = join(nextDir, 'static');
-  const mapPaths = await walk(staticDir).catch(() => []);
-  if (!mapPaths.length) {
-    console.warn(`[errtap] no .js.map files under ${staticDir} — is productionBrowserSourceMaps enabled?`);
-    return;
-  }
 
   const files = await Promise.all(
     mapPaths.map(async (p) => ({
