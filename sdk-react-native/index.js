@@ -53,6 +53,9 @@ export function resolveDsn(dsn, endpointOverride) {
 /**
  * @param {{ dsn: string, endpoint?: string, environment?: string, release?: string, tags?: object }} options
  */
+// De-minify production stacks by uploading the release bundle's source map with the
+// `errtap-upload-sourcemaps` CLI (see upload-sourcemaps.mjs). With Hermes, upload the
+// *composed* map so columns line up. Set the same `release` here and on the upload.
 export function init(options) {
   const resolved = resolveDsn(options.dsn, options.endpoint);
   if (!resolved) {

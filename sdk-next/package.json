@@ -1,10 +1,13 @@
 {
   "name": "@errtap/next",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "ErrTap SDK for Next.js (App Router client + server)",
   "type": "module",
   "main": "client.js",
   "types": "client.d.ts",
+  "bin": {
+    "errtap-upload-sourcemaps": "upload-sourcemaps.mjs"
+  },
   "exports": {
     ".": {
       "types": "./client.d.ts",
@@ -23,7 +26,8 @@
     "client.js",
     "client.d.ts",
     "server.js",
-    "server.d.ts"
+    "server.d.ts",
+    "upload-sourcemaps.mjs"
   ],
   "engines": {
     "node": ">=18"
