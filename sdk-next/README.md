@@ -10,9 +10,10 @@ npm i @errtap/next
 // instrumentation.ts (server — Node only; Edge has no process.on)
 export async function register() {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return;
+  if (!process.env.ERRTAP_DSN) return;
   const { init } = await import('@errtap/next/server');
   init({
-    dsn: process.env.ERRTAP_DSN!, // https://et_…@host
+    dsn: process.env.ERRTAP_DSN, // https://et_…@host
     environment: process.env.NODE_ENV,
     release: process.env.VERCEL_GIT_COMMIT_SHA,
   });
@@ -23,10 +24,12 @@ export async function register() {
 // instrumentation-client.ts (browser — Next 15.3+)
 import { init } from '@errtap/next/client';
 
-init({
-  dsn: process.env.NEXT_PUBLIC_ERRTAP_DSN!,
-  environment: process.env.NODE_ENV,
-});
+if (process.env.NEXT_PUBLIC_ERRTAP_DSN) {
+  init({
+    dsn: process.env.NEXT_PUBLIC_ERRTAP_DSN,
+    environment: process.env.NODE_ENV,
+  });
+}
 ```
 
 Manual capture / logs:
