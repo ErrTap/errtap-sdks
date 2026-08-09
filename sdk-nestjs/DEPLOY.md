@@ -6,7 +6,7 @@ Shared npm / scope setup: see [`../PUBLISHING.md`](../PUBLISHING.md).
 
 ## Prerequisites
 
-1. Publish (or already have) a matching `@errtap/node` on npm — this package depends on `^0.1.0`.
+1. Publish (or already have) a matching `@errtap/node` on npm — this package depends on `^0.2.0`.
 2. Align the dependency range in `package.json` if you released a breaking node SDK version.
 
 ## Publish
@@ -18,7 +18,7 @@ From the **monorepo root**:
 npm publish -w @errtap/nestjs --access public
 
 # later releases
-npm version patch -w @errtap/nestjs   # or minor | major
+npm version patch -w @errtap/nestjs --git-tag-version=false   # or minor | major
 npm publish -w @errtap/nestjs
 ```
 

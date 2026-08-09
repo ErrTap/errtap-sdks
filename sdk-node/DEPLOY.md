@@ -13,7 +13,7 @@ From the **monorepo root**:
 npm publish -w @errtap/node --access public
 
 # later releases
-npm version patch -w @errtap/node   # or minor | major
+npm version patch -w @errtap/node --git-tag-version=false   # or minor | major
 npm publish -w @errtap/node
 ```
 

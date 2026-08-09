@@ -15,7 +15,7 @@ From the **monorepo root**:
 
 ```bash
 git subtree split --prefix=sdk/sdk-laravel-php -b errtap-laravel-release
-git push git@github.com:YOUR_ORG/errtap-laravel.git errtap-laravel-release:main
+git push git@github.com:ErrTap/errtap-laravel.git errtap-laravel-release:main
 ```
 
 On Packagist: **Submit** → paste the standalone repo URL → enable the GitHub webhook.
@@ -25,8 +25,8 @@ On Packagist: **Submit** → paste the standalone repo URL → enable the GitHub
 In the standalone `errtap-laravel` repo (after syncing via subtree split or copy):
 
 ```bash
-git tag v0.1.0
-git push --tags
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 Do **not** add a `version` field to `composer.json` — Packagist uses the git tag.

@@ -1,6 +1,6 @@
 {
   "name": "@errtap/react-native",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "ErrTap React Native error tracking SDK",
   "type": "module",
   "main": "index.js",
@@ -16,6 +16,11 @@
   "license": "MIT",
   "peerDependencies": {
     "react-native": ">=0.72.0"
+  },
+  "peerDependenciesMeta": {
+    "react-native": {
+      "optional": true
+    }
   },
   "repository": {
     "type": "git",

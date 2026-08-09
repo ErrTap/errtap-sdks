@@ -11,7 +11,7 @@ Shared overview: see [`../PUBLISHING.md`](../PUBLISHING.md).
 
 ## Version
 
-Bump `<Version>` in `ErrTap.csproj` before packing (currently `0.1.0`).
+Bump `<Version>` in `ErrTap.csproj` before packing (currently `0.2.0`).
 
 ## Publish
 
@@ -36,7 +36,7 @@ dotnet pack -c Release
 ```bash
 dotnet package search ErrTap
 # or
-dotnet add package ErrTap --version 0.1.0
+dotnet add package ErrTap --version 0.2.0
 ```
 
 ## Notes

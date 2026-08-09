@@ -18,6 +18,12 @@ export async function register() {
     release: process.env.VERCEL_GIT_COMMIT_SHA,
   });
 }
+
+export async function onRequestError(error, request, context) {
+  if (process.env.NEXT_RUNTIME !== 'nodejs' || !process.env.ERRTAP_DSN) return;
+  const { onRequestError: captureRequestError } = await import('@errtap/next/server');
+  await captureRequestError(error, request, context);
+}
 ```
 
 ```ts

@@ -53,4 +53,7 @@ catch (Exception ex)
 }
 
 ErrTap.Info("checkout started", new Dictionary<string, object?> { ["orderId"] = id });
+
+// Flush queued telemetry before a short-lived worker exits.
+await ErrTap.FlushAsync();
 ```

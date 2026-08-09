@@ -2,6 +2,8 @@ import { configure, captureException, captureMessage, logger, resolveDsn } from 
 
 export { captureException, captureMessage, logger, resolveDsn };
 
+let listenersInstalled = false;
+
 /**
  * @param {{ dsn: string, endpoint?: string, environment?: string, release?: string, tags?: object }} options
  */
@@ -15,6 +17,8 @@ export function init(options) {
     // ponytail: sendBeacon can't carry the Authorization header, so keepalive fetch is the send path
     { keepalive: true },
   );
+  if (typeof window === 'undefined' || listenersInstalled) return;
+  listenersInstalled = true;
   window.addEventListener('error', (e) => {
     if (e.error) captureException(e.error);
     else captureMessage(String(e.message || 'Unknown error'), { url: e.filename });

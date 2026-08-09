@@ -1,6 +1,9 @@
 # @errtap/react-native
 
-React Native SDK for ErrTap — hooks `ErrorUtils` for uncaught JS errors.
+React Native SDK for ErrTap — hooks the global `ErrorUtils` runtime for uncaught
+JS errors without importing React Native internals. Repeated `init` calls are
+idempotent. Production Hermes promise rejections are captured when the runtime
+provides its rejection-tracker hook.
 
 ```bash
 npm i @errtap/react-native

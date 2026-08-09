@@ -1,4 +1,4 @@
-# @errtap/laravel
+# errtap/laravel
 
 Zero-dependency ErrTap error tracking for Laravel.
 
@@ -12,7 +12,8 @@ Set env vars:
 
 ```
 ERRTAP_DSN=your-dsn-here
-ERRTAP_ENDPOINT=https://your-errtap-host/ingest/error
+ERRTAP_ENDPOINT=https://your-errtap-host/ingest/error # only required for a bare-key DSN
+ERRTAP_ENV=production
 ERRTAP_RELEASE=v1.0.0   # optional, enables regression detection
 ```
 

@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 
@@ -17,7 +16,7 @@ public sealed class ErrTapClient : IDisposable
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
 
-    private const int BreadcrumbMax = 20;
+    private const int TransportRetries = 2;
 
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
@@ -29,7 +28,8 @@ public sealed class ErrTapClient : IDisposable
     private readonly string _environment;
     private readonly string? _release;
     private readonly IDictionary<string, object?>? _tags;
-    private readonly ConcurrentQueue<object> _breadcrumbs = new();
+    private readonly ConcurrentDictionary<int, Task> _pending = new();
+    private int _nextPendingId;
 
     /// <summary>True when the DSN resolved and events will actually be sent.</summary>
     public bool Enabled => _dsnKey is not null;
@@ -83,7 +83,6 @@ public sealed class ErrTapClient : IDisposable
     public void Log(string level, string message, IDictionary<string, object?>? data = null)
     {
         if (_logEndpoint is null) return;
-        PushBreadcrumb(level, message, data);
         PostJson(_logEndpoint!, new Dictionary<string, object?>
         {
             ["level"] = level,
@@ -109,7 +108,6 @@ public sealed class ErrTapClient : IDisposable
     private void SendError(Dictionary<string, object?> payload)
     {
         if (_endpoint is null) return;
-        var crumbs = DrainBreadcrumbs();
         var context = MergeDict(
             new Dictionary<string, object?>
             {
@@ -118,55 +116,73 @@ public sealed class ErrTapClient : IDisposable
             },
             payload.TryGetValue("context", out var existing) && existing is IDictionary<string, object?> d ? d : null);
 
-        if (crumbs.Count > 0)
-            context["breadcrumbs"] = crumbs;
-
-        payload["environment"] ??= _environment;
-        payload["release"] ??= _release;
-        payload["tags"] ??= _tags;
+        payload.TryAdd("environment", _environment);
+        payload.TryAdd("release", _release);
+        payload.TryAdd("tags", _tags);
         payload["context"] = context;
 
         PostJson(_endpoint!, payload);
     }
 
-    private void PushBreadcrumb(string level, string message, IDictionary<string, object?>? data)
-    {
-        _breadcrumbs.Enqueue(new Dictionary<string, object?>
-        {
-            ["level"] = level,
-            ["message"] = message,
-            ["data"] = data,
-            ["ts"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        });
-        while (_breadcrumbs.Count > BreadcrumbMax && _breadcrumbs.TryDequeue(out _)) { }
-    }
-
-    private List<object> DrainBreadcrumbs()
-    {
-        var list = new List<object>();
-        while (_breadcrumbs.TryDequeue(out var item))
-            list.Add(item);
-        return list;
-    }
-
     private void PostJson(string url, object payload)
     {
-        // fire-and-forget; never surface telemetry failures
-        _ = Task.Run(async () =>
+        string body;
+        try
         {
+            body = JsonSerializer.Serialize(payload, JsonOpts);
+        }
+        catch
+        {
+            return;
+        }
+
+        var id = Interlocked.Increment(ref _nextPendingId);
+        var task = SendWithRetryAsync(url, body, Guid.NewGuid().ToString("N"));
+        _pending[id] = task;
+        _ = task.ContinueWith(
+            completedTask => _pending.TryRemove(id, out _),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private async Task SendWithRetryAsync(string url, string body, string idempotencyKey)
+    {
+        for (var attempt = 0; attempt <= TransportRetries; attempt++)
+        {
+            var shouldRetry = true;
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Post, url);
                 req.Headers.TryAddWithoutValidation("Authorization", $"DSN {_dsnKey}");
-                req.Content = new StringContent(JsonSerializer.Serialize(payload, JsonOpts), Encoding.UTF8, "application/json");
-                req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-                using var res = await _http.SendAsync(req).ConfigureAwait(false);
+                req.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey);
+                req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                using var res = await _http.SendAsync(req, timeout.Token).ConfigureAwait(false);
+                if (res.IsSuccessStatusCode) return;
+                var status = (int) res.StatusCode;
+                shouldRetry = status is 408 or 429 || status >= 500;
             }
             catch
             {
-                // swallow
+                // Transient transport failures are retried below. Telemetry never
+                // throws into the host application.
             }
-        });
+
+            if (!shouldRetry || attempt >= TransportRetries) return;
+            await Task.Delay(200 * (attempt + 1)).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Wait for all telemetry already queued by this client.</summary>
+    public async Task FlushAsync()
+    {
+        while (!_pending.IsEmpty)
+        {
+            var snapshot = _pending.Values.ToArray();
+            if (snapshot.Length == 0) return;
+            await Task.WhenAll(snapshot).ConfigureAwait(false);
+        }
     }
 
     private static void Merge(Dictionary<string, object?> target, IDictionary<string, object?>? extra)
@@ -191,6 +207,14 @@ public sealed class ErrTapClient : IDisposable
 
     public void Dispose()
     {
+        try
+        {
+            FlushAsync().GetAwaiter().GetResult();
+        }
+        catch
+        {
+            // telemetry shutdown must not break host shutdown
+        }
         if (_ownsHttp) _http.Dispose();
     }
 }
@@ -223,4 +247,6 @@ public static class ErrTap
 
     public static void Error(string message, IDictionary<string, object?>? data = null) =>
         _client?.Error(message, data);
+
+    public static Task FlushAsync() => _client?.FlushAsync() ?? Task.CompletedTask;
 }

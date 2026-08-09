@@ -18,11 +18,6 @@ class ErrTap
     /** @var array<string,int> per-request duplicate-query counter for N+1 detection */
     private static array $queryCounts = [];
 
-    /** @var list<array{level:string,message:string,data?:mixed,ts:int}> */
-    private static array $breadcrumbs = [];
-
-    private const BREADCRUMB_MAX = 20;
-
     /**
      * @return array{key:string,endpoint:string,logEndpoint:string}|null
      */
@@ -116,7 +111,6 @@ class ErrTap
         if (!$cfg || empty($cfg['logEndpoint'])) {
             return;
         }
-        self::pushBreadcrumb($level, $message, $data ?: null);
         self::postJson($cfg['logEndpoint'], [
             'level' => $level,
             'message' => mb_substr($message, 0, 8192),
@@ -197,29 +191,11 @@ class ErrTap
         }
     }
 
-    private static function pushBreadcrumb(string $level, string $message, mixed $data): void
-    {
-        self::$breadcrumbs[] = [
-            'level' => $level,
-            'message' => $message,
-            'data' => $data,
-            'ts' => (int) round(microtime(true) * 1000),
-        ];
-        if (count(self::$breadcrumbs) > self::BREADCRUMB_MAX) {
-            array_shift(self::$breadcrumbs);
-        }
-    }
-
     private static function sendError(array $payload): void
     {
         $cfg = self::$cfg;
         if (!$cfg || empty($cfg['dsn']) || empty($cfg['endpoint'])) {
             return;
-        }
-
-        if (self::$breadcrumbs) {
-            $existing = is_array($payload['context'] ?? null) ? $payload['context'] : [];
-            $payload['context'] = array_merge($existing, ['breadcrumbs' => self::$breadcrumbs]);
         }
 
         self::postJson($cfg['endpoint'], array_merge([
@@ -241,9 +217,14 @@ class ErrTap
             return;
         }
         $body = json_encode($payload);
+        try {
+            $idempotencyKey = bin2hex(random_bytes(16));
+        } catch (Throwable $ignored) {
+            $idempotencyKey = uniqid('', true);
+        }
         for ($attempt = 0; $attempt <= self::TRANSPORT_RETRIES; $attempt++) {
             try {
-                if (self::sendOnce($url, $body, $cfg['dsn'])) {
+                if (self::sendOnce($url, $body, $cfg['dsn'], $idempotencyKey)) {
                     return;
                 }
             } catch (Throwable $ignored) {
@@ -255,7 +236,7 @@ class ErrTap
         }
     }
 
-    private static function sendOnce(string $url, string $body, string $dsn): bool
+    private static function sendOnce(string $url, string $body, string $dsn, string $idempotencyKey): bool
     {
         $ch = curl_init($url);
         if ($ch === false) {
@@ -267,6 +248,7 @@ class ErrTap
             CURLOPT_HTTPHEADER => [
                 'Content-Type: application/json',
                 'Authorization: DSN ' . $dsn,
+                'Idempotency-Key: ' . $idempotencyKey,
             ],
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => 5,

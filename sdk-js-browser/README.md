@@ -29,6 +29,4 @@ try {
 }
 ```
 
-Or drop it in a plain `<script type="module">` — no build step required.
-
 Docs: https://docs.errtap.com

@@ -14,10 +14,13 @@ import {
  */
 export class ErrTapExceptionFilter extends BaseExceptionFilter {
   catch(exception, host) {
-    if (exception instanceof Error) {
-      void captureException(exception);
-    } else {
-      void captureException(new Error(String(exception)));
+    const status = typeof exception?.getStatus === 'function' ? exception.getStatus() : undefined;
+    if (typeof status !== 'number' || status >= 500) {
+      if (exception instanceof Error) {
+        void captureException(exception);
+      } else {
+        void captureException(new Error(String(exception)));
+      }
     }
     super.catch(exception, host);
   }

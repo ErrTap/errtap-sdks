@@ -18,7 +18,7 @@ From the **monorepo root**:
 npm publish -w @errtap/next --access public
 
 # later releases
-npm version patch -w @errtap/next   # or minor | major
+npm version patch -w @errtap/next --git-tag-version=false   # or minor | major
 npm publish -w @errtap/next
 ```
 

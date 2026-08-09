@@ -24,7 +24,10 @@ const TARGETS = [
 ];
 
 function generate(glueFile) {
-  const core = readFileSync(join(SDK, 'sdk-js/core.js'), 'utf8');
+  const core = readFileSync(join(SDK, 'sdk-js/core.js'), 'utf8')
+    // configure connects the shared entrypoint sources; published packages do
+    // not expose it as a supported application API.
+    .replace('export function configure(', 'function configure(');
   const glue = readFileSync(join(SDK, 'sdk-js', glueFile), 'utf8')
     // core is concatenated above — drop the import and the re-export of core's own exports
     .replace(/^import .* from '\.\/core\.js';\n/m, '')

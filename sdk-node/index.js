@@ -7,12 +7,13 @@
 let cfg = null;
 let context = () => ({});
 let fetchOpts = {};
-/** @type {{ level: string, message: string, data?: object, ts: number }[]} */
-const breadcrumbs = [];
-const BREADCRUMB_MAX = 20;
 const PAYLOAD_MAX_BYTES = 256 * 1024;
 const TRANSPORT_TIMEOUT_MS = 10_000;
 const TRANSPORT_RETRIES = 2;
+
+function telemetryId() {
+  return globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
 
 /**
  * Parse a Sentry-style URL DSN (`https://et_key@host[:port]`) or a bare key.
@@ -59,7 +60,7 @@ export function resolveDsn(dsn, endpointOverride) {
   };
 }
 
-export function configure(options, contextFn = () => ({}), extraFetchOpts = {}) {
+function configure(options, contextFn = () => ({}), extraFetchOpts = {}) {
   const resolved = resolveDsn(options.dsn, options.endpoint);
   if (!resolved) {
     cfg = null;
@@ -74,11 +75,6 @@ export function configure(options, contextFn = () => ({}), extraFetchOpts = {}) 
   };
   context = contextFn;
   fetchOpts = extraFetchOpts;
-}
-
-function pushBreadcrumb(level, message, data) {
-  breadcrumbs.push({ level, message, data, ts: Date.now() });
-  if (breadcrumbs.length > BREADCRUMB_MAX) breadcrumbs.shift();
 }
 
 function mergeTags(...sources) {
@@ -113,42 +109,71 @@ function mergeContext(...sources) {
   return out;
 }
 
-function withBreadcrumbs(payload) {
-  if (!breadcrumbs.length) return payload;
-  const existing = payload.context && typeof payload.context === 'object' ? payload.context : {};
-  return {
-    ...payload,
-    context: { ...existing, breadcrumbs: breadcrumbs.slice() },
-  };
+function runtimeContext() {
+  try {
+    const value = context();
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function jsonBytes(value) {
+  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(value).byteLength;
+  return value.length;
+}
+
+function stringifySafely(value) {
+  const seen = new WeakSet();
+  try {
+    return JSON.stringify(value, (_key, item) => {
+      if (typeof item === 'bigint') return String(item);
+      if (item && typeof item === 'object') {
+        if (seen.has(item)) return '[Circular]';
+        seen.add(item);
+      }
+      return item;
+    });
+  } catch {
+    return null;
+  }
+}
+
+function serializePayload(body) {
+  const json = stringifySafely(body);
+  if (json === null || jsonBytes(json) <= PAYLOAD_MAX_BYTES) return json;
+
+  // Keep a valid, useful envelope instead of cutting a JSON string mid-value.
+  return stringifySafely({
+    environment: typeof body.environment === 'string' ? body.environment.slice(0, 256) : undefined,
+    release: typeof body.release === 'string' ? body.release.slice(0, 512) : undefined,
+    level: typeof body.level === 'string' ? body.level.slice(0, 64) : undefined,
+    type: typeof body.type === 'string' ? body.type.slice(0, 512) : undefined,
+    message: String(body.message ?? '').slice(0, 4096),
+    stacktrace: typeof body.stacktrace === 'string' ? body.stacktrace.slice(0, 8192) : undefined,
+    url: typeof body.url === 'string' ? body.url.slice(0, 2048) : undefined,
+    truncated: true,
+    originalBytes: jsonBytes(json),
+  });
 }
 
 function buildEnvelope(payload) {
-  const runtime = context();
-  const body = withBreadcrumbs({
+  const runtime = runtimeContext();
+  const body = {
     environment: cfg.environment,
     release: cfg.release,
     ...runtime,
     ...payload,
     tags: mergeTags(cfg.tags, runtime.tags, payload.tags),
     context: mergeContext(runtime.context, payload.context),
-  });
+  };
   if (typeof body.message === 'string' && body.message.length > 8192) {
     body.message = body.message.slice(0, 8192);
   }
   if (typeof body.stacktrace === 'string' && body.stacktrace.length > 32_768) {
     body.stacktrace = body.stacktrace.slice(0, 32_768);
   }
-  let json = JSON.stringify(body);
-  if (json.length > PAYLOAD_MAX_BYTES) {
-    json = JSON.stringify({
-      ...body,
-      message: String(body.message ?? '').slice(0, 4096),
-      stacktrace: typeof body.stacktrace === 'string' ? body.stacktrace.slice(0, 8192) : undefined,
-      truncated: true,
-      originalBytes: json.length,
-    }).slice(0, PAYLOAD_MAX_BYTES);
-  }
-  return json;
+  return serializePayload(body);
 }
 
 async function sendWithRetry(url, init) {
@@ -172,45 +197,57 @@ async function sendWithRetry(url, init) {
 /** @param {Error} error */
 export function captureException(error, extra = {}) {
   return sendError(
-    withBreadcrumbs({
+    {
       message: error.message || String(error),
       type: error.name || 'Error',
       stacktrace: error.stack,
       ...extra,
-    }),
+    },
   );
 }
 
 export function captureMessage(message, extra = {}) {
-  return sendError(withBreadcrumbs({ message, type: 'Message', ...extra }));
+  return sendError({ message, type: 'Message', ...extra });
 }
 
 function sendError(payload) {
   if (!cfg) return;
+  const body = buildEnvelope(payload);
+  if (body === null) return Promise.resolve();
   return sendWithRetry(cfg.endpoint, {
     method: 'POST',
     ...fetchOpts,
-    headers: { 'Content-Type': 'application/json', Authorization: `DSN ${cfg.dsn}` },
-    body: buildEnvelope(payload),
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `DSN ${cfg.dsn}`,
+      'Idempotency-Key': telemetryId(),
+    },
+    body,
   });
 }
 
 function sendLog(level, message, data) {
   if (!cfg?.logEndpoint) return;
-  pushBreadcrumb(level, message, data);
+  const runtime = runtimeContext();
+  const body = serializePayload({
+    ...runtime,
+    level,
+    message: String(message).slice(0, 8192),
+    environment: cfg.environment,
+    release: cfg.release,
+    tags: mergeTags(cfg.tags, runtime.tags),
+    context: mergeContext(runtime.context, data),
+  });
+  if (body === null) return Promise.resolve();
   return sendWithRetry(cfg.logEndpoint, {
     method: 'POST',
     ...fetchOpts,
-    headers: { 'Content-Type': 'application/json', Authorization: `DSN ${cfg.dsn}` },
-    body: JSON.stringify({
-      level,
-      message: String(message).slice(0, 8192),
-      environment: cfg.environment,
-      release: cfg.release,
-      tags: mergeTags(cfg.tags, context().tags),
-      context: mergeContext(context().context, data),
-      ...context(),
-    }),
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `DSN ${cfg.dsn}`,
+      'Idempotency-Key': telemetryId(),
+    },
+    body,
   });
 }
 
@@ -221,9 +258,6 @@ export const logger = {
   warning: (message, data) => sendLog('warning', message, data),
   error: (message, data) => sendLog('error', message, data),
 };
-
-// test helpers (not part of the public API surface for apps)
-export const __test = { mergeContext, mergeTags, buildEnvelope };
 
 // re-init (e.g. in tests or hot-reload) would otherwise stack a duplicate pair of
 // these listeners on `process` every call; drop the prior pair first.

@@ -1,6 +1,8 @@
-import { ErrorUtils, Platform } from 'react-native';
+import { Platform } from 'react-native';
 
 let cfg = null;
+let errorHandlerInstalled = false;
+let rejectionHandlerInstalled = false;
 /** @type {{ level: string, message: string, data?: object, ts: number }[]} */
 const breadcrumbs = [];
 const BREADCRUMB_MAX = 20;
@@ -70,16 +72,41 @@ export function init(options) {
     logEndpoint: resolved.logEndpoint,
   };
 
-  // ponytail: ErrorUtils only — no hermes promise rejection tracking until someone asks
-  const prev = ErrorUtils.getGlobalHandler();
-  ErrorUtils.setGlobalHandler((error, isFatal) => {
-    if (error instanceof Error) {
-      captureException(error, { tags: { ...(cfg?.tags || {}), fatal: !!isFatal } });
-    } else {
-      captureMessage(String(error), { tags: { fatal: !!isFatal } });
-    }
-    if (typeof prev === 'function') prev(error, isFatal);
-  });
+  const errorUtils = globalThis.ErrorUtils;
+  if (
+    !errorHandlerInstalled &&
+    typeof errorUtils?.getGlobalHandler === 'function' &&
+    typeof errorUtils?.setGlobalHandler === 'function'
+  ) {
+    const previousHandler = errorUtils.getGlobalHandler();
+    errorUtils.setGlobalHandler((error, isFatal) => {
+      if (error instanceof Error) {
+        captureException(error, { tags: { fatal: !!isFatal } });
+      } else {
+        captureMessage(String(error), { tags: { fatal: !!isFatal } });
+      }
+      if (typeof previousHandler === 'function') previousHandler(error, isFatal);
+    });
+    errorHandlerInstalled = true;
+  }
+
+  // Hermes exposes a rejection tracker in production. Do not replace React
+  // Native's development tracker, and do not monkey-patch Promise on runtimes
+  // without this existing hook.
+  const enableRejectionTracker = globalThis.HermesInternal?.enablePromiseRejectionTracker;
+  if (!rejectionHandlerInstalled && !globalThis.__DEV__ && typeof enableRejectionTracker === 'function') {
+    enableRejectionTracker.call(globalThis.HermesInternal, {
+      allRejections: true,
+      onUnhandled(_id, reason) {
+        reason instanceof Error
+          ? captureException(reason, { tags: { unhandledPromise: true } })
+          : captureMessage(`Unhandled rejection: ${String(reason)}`, {
+              tags: { unhandledPromise: true },
+            });
+      },
+    });
+    rejectionHandlerInstalled = true;
+  }
 }
 
 function pushBreadcrumb(level, message, data) {

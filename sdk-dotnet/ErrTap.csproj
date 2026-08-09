@@ -7,16 +7,19 @@
     <RootNamespace>ErrTap</RootNamespace>
     <AssemblyName>ErrTap</AssemblyName>
     <PackageId>ErrTap</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Authors>ErrTap</Authors>
     <Description>ErrTap error tracking for ASP.NET Core — reports unhandled exceptions to your ErrTap project.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>errtap;error-tracking;aspnetcore;observability</PackageTags>
-    <RepositoryUrl>https://github.com/errtap/errtap</RepositoryUrl>
+    <RepositoryUrl>https://github.com/ErrTap/observer-app</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <None Include="README.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 </Project>

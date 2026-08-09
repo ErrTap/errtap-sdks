@@ -13,7 +13,7 @@ From the **monorepo root**:
 npm publish -w @errtap/react-native --access public
 
 # later releases
-npm version patch -w @errtap/react-native   # or minor | major
+npm version patch -w @errtap/react-native --git-tag-version=false   # or minor | major
 npm publish -w @errtap/react-native
 ```
 
