@@ -33,8 +33,11 @@ public sealed class ErrTapClient : IDisposable
     private readonly IDictionary<string, object?>? _tags;
     private readonly ConcurrentDictionary<int, Task> _pending = new();
     private int _nextPendingId;
-    // set by a 429: sends are dropped until then instead of piling onto a full window
-    private long _pausedUntilTicks;
+    // Errors and logs are paused and capped per endpoint, like the backend's separate
+    // ingest windows: a chatty logger must never starve error delivery.
+    // Set by a 429: that endpoint's sends are dropped until then.
+    private readonly ConcurrentDictionary<string, long> _pausedUntilTicks = new();
+    private readonly ConcurrentDictionary<string, int> _inFlight = new();
 
     /// <summary>True when the DSN resolved and events will actually be sent.</summary>
     public bool Enabled => _dsnKey is not null;
@@ -131,8 +134,8 @@ public sealed class ErrTapClient : IDisposable
 
     private void PostJson(string url, object payload)
     {
-        if (DateTime.UtcNow.Ticks < Interlocked.Read(ref _pausedUntilTicks)) return;
-        if (_pending.Count >= MaxInFlight) return;
+        if (_pausedUntilTicks.TryGetValue(url, out var until) && DateTime.UtcNow.Ticks < until) return;
+        if (_inFlight.GetValueOrDefault(url) >= MaxInFlight) return;
         string body;
         try
         {
@@ -144,10 +147,15 @@ public sealed class ErrTapClient : IDisposable
         }
 
         var id = Interlocked.Increment(ref _nextPendingId);
+        _inFlight.AddOrUpdate(url, 1, (_, n) => n + 1);
         var task = SendWithRetryAsync(url, body, Guid.NewGuid().ToString("N"));
         _pending[id] = task;
         _ = task.ContinueWith(
-            completedTask => _pending.TryRemove(id, out _),
+            completedTask =>
+            {
+                _pending.TryRemove(id, out _);
+                _inFlight.AddOrUpdate(url, 0, (_, n) => n - 1);
+            },
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
@@ -175,7 +183,7 @@ public sealed class ErrTapClient : IDisposable
                         ?? (retryAfter?.Date is { } at ? at - DateTimeOffset.UtcNow : (TimeSpan?)null)
                         ?? TimeSpan.FromMinutes(1);
                     if (wait > TimeSpan.FromHours(1)) wait = TimeSpan.FromHours(1);
-                    Interlocked.Exchange(ref _pausedUntilTicks, DateTime.UtcNow.Add(wait).Ticks);
+                    _pausedUntilTicks[url] = DateTime.UtcNow.Add(wait).Ticks;
                     return;
                 }
                 // other 4xx (bad DSN, too large) fail identically on retry

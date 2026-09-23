@@ -108,17 +108,17 @@ describe('sdk core transport', () => {
 
   it('stops sending until Retry-After once the server answers 429', async () => {
     const originalFetch = globalThis.fetch;
-    let calls = 0;
-    globalThis.fetch = async () => {
-      calls++;
+    const calls = [];
+    globalThis.fetch = async (url) => {
+      calls.push(url);
       return { ok: false, status: 429, headers: new Headers({ 'retry-after': '30' }) };
     };
     try {
       configure({ dsn: 'et_test', endpoint: 'https://example.test/ingest/error' });
       await captureException(new Error('first'));
       await captureException(new Error('second'));
-      await logger.info('third');
-      assert.equal(calls, 1, 'one request, then paused instead of retrying into the window');
+      const errorCalls = calls.filter((u) => u.endsWith('/ingest/error'));
+      assert.equal(errorCalls.length, 1, 'one request, then paused instead of retrying into the window');
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -159,6 +159,26 @@ describe('sdk core transport', () => {
       assert.equal(started, 100);
       release();
       await Promise.all(sends);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('keeps error delivery independent of a rate-limited log endpoint', async () => {
+    const originalFetch = globalThis.fetch;
+    const hits = [];
+    globalThis.fetch = async (url) => {
+      hits.push(url);
+      return url.endsWith('/ingest/log')
+        ? { ok: false, status: 429, headers: new Headers({ 'retry-after': '60' }) }
+        : { ok: true, status: 202, headers: new Headers() };
+    };
+    try {
+      configure({ dsn: 'et_test', endpoint: 'https://example.test/ingest/error' });
+      await logger.info('chatty'); // 429 pauses logs only
+      await logger.info('still chatty');
+      await captureException(new Error('must still be delivered'));
+      assert.deepEqual(hits, ['https://example.test/ingest/log', 'https://example.test/ingest/error']);
     } finally {
       globalThis.fetch = originalFetch;
     }

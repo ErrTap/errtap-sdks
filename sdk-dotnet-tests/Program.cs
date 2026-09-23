@@ -7,6 +7,7 @@ await DoesNotRetryClientErrors();
 await SerializationFailuresStayInsideTheSdk();
 await PausesAfterRateLimit();
 await CapsSendsInFlight();
+await LogRateLimitDoesNotPauseErrors();
 
 Console.WriteLine("ErrTap .NET transport tests passed");
 
@@ -70,10 +71,9 @@ static async Task PausesAfterRateLimit()
     client.CaptureMessage("over quota");
     await client.FlushAsync();
     client.CaptureMessage("still inside the Retry-After window");
-    client.Info("so is this log");
     await client.FlushAsync();
 
-    Assert(handler.Attempts == 1, "a 429 must not be retried, and later sends wait out Retry-After");
+    Assert(handler.Attempts == 1, "a 429 must not be retried, and later sends to that endpoint wait out Retry-After");
 }
 
 static async Task CapsSendsInFlight()
@@ -90,6 +90,25 @@ static async Task CapsSendsInFlight()
     await client.FlushAsync();
 
     Assert(started == 100, $"an error storm must not open unbounded requests (started {started})");
+}
+
+static async Task LogRateLimitDoesNotPauseErrors()
+{
+    var handler = new RecordingHandler(_ =>
+    {
+        var res = new HttpResponseMessage((HttpStatusCode)429);
+        res.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(60));
+        return res;
+    });
+    using var http = new HttpClient(handler);
+    using var client = NewClient(http);
+
+    client.Info("chatty log hits a 429");
+    await client.FlushAsync();
+    client.CaptureMessage("an error must still be sent");
+    await client.FlushAsync();
+
+    Assert(handler.Attempts == 2, "a 429 on the log endpoint must not pause error delivery");
 }
 
 static ErrTapClient NewClient(HttpClient http) => new(

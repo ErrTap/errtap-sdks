@@ -7,19 +7,21 @@ let fetchOpts = {};
 // per-runtime send limits (the browser sets these; see browser.js)
 let limits = {};
 let recentErrors = new Map();
-let minuteStart = 0;
-let sentThisMinute = 0;
+// Errors and logs get separate budgets, pauses and in-flight caps, like the backend's
+// separate ingest windows: a chatty logger must never starve error delivery.
+let minuteWindows = new Map(); // kind → { start, count }
 const PAYLOAD_MAX_BYTES = 256 * 1024;
 const TRANSPORT_TIMEOUT_MS = 10_000;
 const TRANSPORT_RETRIES = 2;
 const RETRY_AFTER_DEFAULT_MS = 60_000; // the backend's rate windows are per minute
 const RETRY_AFTER_MAX_MS = 60 * 60_000;
-// set by a 429: every send is dropped until then instead of piling onto a full window
-let pausedUntil = 0;
-// When the host is failing, every request throws. Past this many unfinished sends,
-// drop new telemetry rather than pile up sockets and memory in the struggling host.
+// set by a 429, per endpoint: its sends are dropped until then instead of piling onto
+// a full window
+let pausedUntil = new Map();
+// When the host is failing, every request throws. Past this many unfinished sends to
+// one endpoint, drop new telemetry rather than pile up sockets and memory in the host.
 const MAX_IN_FLIGHT = 100;
-let inFlight = 0;
+const inFlight = new Map();
 
 function telemetryId() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -87,20 +89,21 @@ export function configure(options, contextFn = () => ({}), extraFetchOpts = {}, 
   fetchOpts = extraFetchOpts;
   limits = sendLimits;
   recentErrors = new Map();
-  minuteStart = 0;
-  sentThisMinute = 0;
-  pausedUntil = 0;
+  minuteWindows = new Map();
+  pausedUntil = new Map();
+  // inFlight survives re-init: those requests are still under way
 }
 
-/** Per-minute cap: one looping error must not burn the project's rate limit and quota. */
-function withinRate() {
+/** Per-minute cap per kind: one looping error must not burn the project's rate limit and quota. */
+function withinRate(kind) {
   if (!limits.maxPerMinute) return true;
   const now = Date.now();
-  if (now - minuteStart >= 60_000) {
-    minuteStart = now;
-    sentThisMinute = 0;
+  let window = minuteWindows.get(kind);
+  if (!window || now - window.start >= 60_000) {
+    window = { start: now, count: 0 };
+    minuteWindows.set(kind, window);
   }
-  return ++sentThisMinute <= limits.maxPerMinute;
+  return ++window.count <= limits.maxPerMinute;
 }
 
 /** Drop an error identical to one sent within `dedupeMs` (render loops, rAF, intervals). */
@@ -244,12 +247,14 @@ function retryAfterMs(res) {
 }
 
 async function sendWithRetry(url, init) {
-  if (Date.now() < pausedUntil || inFlight >= MAX_IN_FLIGHT) return;
-  inFlight++;
+  if (Date.now() < (pausedUntil.get(url) ?? 0)) return;
+  const pending = inFlight.get(url) ?? 0;
+  if (pending >= MAX_IN_FLIGHT) return;
+  inFlight.set(url, pending + 1);
   try {
     await attemptSend(url, init);
   } finally {
-    inFlight--;
+    inFlight.set(url, (inFlight.get(url) ?? 1) - 1);
   }
 }
 
@@ -262,7 +267,7 @@ async function attemptSend(url, init) {
       if (timer) clearTimeout(timer);
       if (res.ok) return;
       if (res.status === 429) {
-        pausedUntil = Date.now() + Math.min(retryAfterMs(res), RETRY_AFTER_MAX_MS);
+        pausedUntil.set(url, Date.now() + Math.min(retryAfterMs(res), RETRY_AFTER_MAX_MS));
         return;
       }
       // other 4xx (bad DSN, too large) fail identically on retry
@@ -295,7 +300,7 @@ export function captureMessage(message, extra = {}) {
 
 function sendError(payload) {
   if (!cfg) return;
-  if (isRepeat(payload) || !withinRate()) return Promise.resolve();
+  if (isRepeat(payload) || !withinRate('error')) return Promise.resolve();
   const body = buildEnvelope(payload);
   if (body === null) return Promise.resolve();
   return sendWithRetry(cfg.endpoint, transportInit(body));
@@ -303,7 +308,7 @@ function sendError(payload) {
 
 function sendLog(level, message, data) {
   if (!cfg?.logEndpoint) return;
-  if (!withinRate()) return Promise.resolve();
+  if (!withinRate('log')) return Promise.resolve();
   const runtime = runtimeContext();
   const body = serializePayload({
     ...runtime,

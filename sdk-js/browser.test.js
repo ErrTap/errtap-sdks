@@ -66,4 +66,14 @@ describe('browser send limits', () => {
       assert.equal(calls[1].keepalive, false);
     });
   });
+
+  it('gives logs and errors separate per-minute budgets', async () => {
+    await withFetch(async (calls) => {
+      init({ dsn: 'et_test', endpoint: 'https://example.test/ingest/error' });
+      const { logger } = await import('./browser.js');
+      for (let i = 0; i < 80; i++) await logger.info(`log ${i}`);
+      await captureException(new Error('after a log flood'));
+      assert.equal(calls.filter((c) => c.body.includes('after a log flood')).length, 1);
+    });
+  });
 });
