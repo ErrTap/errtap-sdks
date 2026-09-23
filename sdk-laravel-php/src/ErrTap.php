@@ -19,6 +19,48 @@ class ErrTap
     private static array $queryCounts = [];
 
     /**
+     * Events held until the response has gone out (see deferSends).
+     * @var list<array{url:string,body:string}>
+     */
+    private static array $outbox = [];
+
+    private static bool $defer = false;
+
+    // bounded so an error storm in one request can't grow memory without limit
+    private const OUTBOX_MAX = 50;
+
+    // one flush never holds a worker longer than this, however many events fail
+    private const FLUSH_BUDGET_SECONDS = 5.0;
+
+    private const CONNECT_TIMEOUT_SECONDS = 2;
+
+    private const REQUEST_TIMEOUT_SECONDS = 3;
+
+    /**
+     * Hold events and send them from flush(). The service provider turns this on for
+     * HTTP requests and flushes on `terminating`, which under PHP-FPM runs after the
+     * response is sent — so a slow or unreachable ErrTap never delays the user.
+     */
+    public static function deferSends(bool $defer): void
+    {
+        self::$defer = $defer;
+    }
+
+    /** Send everything held by deferSends(). Safe to call more than once. */
+    public static function flush(): void
+    {
+        $pending = self::$outbox;
+        self::$outbox = [];
+        $deadline = microtime(true) + self::FLUSH_BUDGET_SECONDS;
+        foreach ($pending as $event) {
+            if (microtime(true) >= $deadline) {
+                return; // drop the rest rather than hold the worker
+            }
+            self::deliver($event['url'], $event['body'], $deadline);
+        }
+    }
+
+    /**
      * @return array{key:string,endpoint:string,logEndpoint:string}|null
      */
     public static function resolveDsn(string $dsn, ?string $endpointOverride = null): ?array
@@ -206,17 +248,34 @@ class ErrTap
         ], $payload));
     }
 
-    // matches sdk-node/sdk-js-browser's retry count, so a transient network blip
-    // doesn't silently drop the event in PHP only.
+    // Network errors, 408 and 5xx are worth retrying. 4xx aren't: 401 (revoked DSN),
+    // 413 (too large) and 429 (rate-limited or over quota) fail the same way again.
     private const TRANSPORT_RETRIES = 2;
 
     private static function postJson(string $url, array $payload): void
+    {
+        if (!self::$cfg) {
+            return;
+        }
+        $body = json_encode($payload, JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR);
+        if ($body === false) {
+            return;
+        }
+        if (self::$defer) {
+            if (count(self::$outbox) < self::OUTBOX_MAX) {
+                self::$outbox[] = ['url' => $url, 'body' => $body];
+            }
+            return;
+        }
+        self::deliver($url, $body, microtime(true) + self::FLUSH_BUDGET_SECONDS);
+    }
+
+    private static function deliver(string $url, string $body, float $deadline): void
     {
         $cfg = self::$cfg;
         if (!$cfg) {
             return;
         }
-        $body = json_encode($payload);
         try {
             $idempotencyKey = bin2hex(random_bytes(16));
         } catch (Throwable $ignored) {
@@ -224,23 +283,28 @@ class ErrTap
         }
         for ($attempt = 0; $attempt <= self::TRANSPORT_RETRIES; $attempt++) {
             try {
-                if (self::sendOnce($url, $body, $cfg['dsn'], $idempotencyKey)) {
-                    return;
-                }
+                $status = self::sendOnce($url, $body, $cfg['dsn'], $idempotencyKey);
             } catch (Throwable $ignored) {
-                // never crash the host app over telemetry
+                $status = 0; // never crash the host app over telemetry
             }
-            if ($attempt < self::TRANSPORT_RETRIES) {
-                usleep(200_000 * ($attempt + 1));
+            $retryable = $status === 0 || $status === 408 || $status >= 500;
+            if (($status >= 200 && $status < 300) || !$retryable) {
+                return;
             }
+            $backoff = 0.2 * ($attempt + 1);
+            if ($attempt >= self::TRANSPORT_RETRIES || microtime(true) + $backoff >= $deadline) {
+                return;
+            }
+            usleep((int) ($backoff * 1_000_000));
         }
     }
 
-    private static function sendOnce(string $url, string $body, string $dsn, string $idempotencyKey): bool
+    /** @return int HTTP status, or 0 on a network error */
+    private static function sendOnce(string $url, string $body, string $dsn, string $idempotencyKey): int
     {
         $ch = curl_init($url);
         if ($ch === false) {
-            return false;
+            return 0;
         }
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
@@ -251,12 +315,12 @@ class ErrTap
                 'Idempotency-Key: ' . $idempotencyKey,
             ],
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 5,
+            CURLOPT_CONNECTTIMEOUT => self::CONNECT_TIMEOUT_SECONDS,
+            CURLOPT_TIMEOUT => self::REQUEST_TIMEOUT_SECONDS,
         ]);
         curl_exec($ch);
-        $failed = curl_errno($ch) !== 0;
-        $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $status = curl_errno($ch) !== 0 ? 0 : (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
-        return !$failed && $status >= 200 && $status < 300;
+        return $status;
     }
 }

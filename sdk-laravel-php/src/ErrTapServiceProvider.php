@@ -50,12 +50,31 @@ class ErrTapServiceProvider extends ServiceProvider
             $opts['endpoint'] = 'http://localhost:4000/ingest/error';
         }
         ErrTap::init($opts);
+
         // DB monitoring: slow queries + N+1 detection (ERRTAP_DB_MONITOR=false to disable)
         if (config('errtap.db_monitor', true) && class_exists(\Illuminate\Support\Facades\DB::class)) {
             \Illuminate\Support\Facades\DB::listen(function ($query) {
                 ErrTap::recordQuery($query->sql, (float) $query->time, $query->connectionName ?? null);
             });
             $this->app->terminating(fn () => ErrTap::flushQueryStats());
+            // A queue worker only terminates when it exits; count queries per job, or
+            // counts pile up across every job it runs (memory growth, false N+1s).
+            if (class_exists(\Illuminate\Queue\Events\JobProcessed::class)) {
+                $this->app['events']->listen(
+                    [\Illuminate\Queue\Events\JobProcessed::class, \Illuminate\Queue\Events\JobFailed::class],
+                    fn () => ErrTap::flushQueryStats(),
+                );
+            }
+        }
+
+        // HTTP: hold events until the response is out. Console/queue workers have no
+        // user waiting and may run for days, so they send immediately. Registered after
+        // flushQueryStats (terminating callbacks run in order) so N+1 reports ride along.
+        if (!$this->app->runningInConsole()) {
+            ErrTap::deferSends(true);
+            $this->app->terminating(fn () => ErrTap::flush());
+            // backstop for fatals that end the request before `terminating` runs
+            register_shutdown_function(fn () => ErrTap::flush());
         }
     }
 }
