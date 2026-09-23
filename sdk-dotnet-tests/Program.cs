@@ -6,6 +6,7 @@ await RetriesTransientResponsesAndFlushes();
 await DoesNotRetryClientErrors();
 await SerializationFailuresStayInsideTheSdk();
 await PausesAfterRateLimit();
+await CapsSendsInFlight();
 
 Console.WriteLine("ErrTap .NET transport tests passed");
 
@@ -75,6 +76,22 @@ static async Task PausesAfterRateLimit()
     Assert(handler.Attempts == 1, "a 429 must not be retried, and later sends wait out Retry-After");
 }
 
+static async Task CapsSendsInFlight()
+{
+    var gate = new TaskCompletionSource();
+    var handler = new GatedHandler(gate.Task);
+    using var http = new HttpClient(handler);
+    using var client = NewClient(http);
+
+    for (var i = 0; i < 150; i++) client.CaptureMessage($"storm {i}");
+    await Task.Delay(200);
+    var started = handler.Started;
+    gate.SetResult();
+    await client.FlushAsync();
+
+    Assert(started == 100, $"an error storm must not open unbounded requests (started {started})");
+}
+
 static ErrTapClient NewClient(HttpClient http) => new(
     new ErrTapOptions
     {
@@ -104,5 +121,18 @@ sealed class RecordingHandler(Func<int, HttpResponseMessage> response) : HttpMes
         IdempotencyKeys.Add(request.Headers.GetValues("Idempotency-Key").SingleOrDefault());
         Bodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
         return response(Attempts);
+    }
+}
+
+sealed class GatedHandler(Task gate) : HttpMessageHandler
+{
+    private int _started;
+    public int Started => Volatile.Read(ref _started);
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref _started);
+        await gate.ConfigureAwait(false);
+        return new HttpResponseMessage(HttpStatusCode.Accepted);
     }
 }

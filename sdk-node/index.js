@@ -19,6 +19,10 @@ const RETRY_AFTER_DEFAULT_MS = 60_000; // the backend's rate windows are per min
 const RETRY_AFTER_MAX_MS = 60 * 60_000;
 // set by a 429: every send is dropped until then instead of piling onto a full window
 let pausedUntil = 0;
+// When the host is failing, every request throws. Past this many unfinished sends,
+// drop new telemetry rather than pile up sockets and memory in the struggling host.
+const MAX_IN_FLIGHT = 100;
+let inFlight = 0;
 
 function telemetryId() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -243,7 +247,16 @@ function retryAfterMs(res) {
 }
 
 async function sendWithRetry(url, init) {
-  if (Date.now() < pausedUntil) return;
+  if (Date.now() < pausedUntil || inFlight >= MAX_IN_FLIGHT) return;
+  inFlight++;
+  try {
+    await attemptSend(url, init);
+  } finally {
+    inFlight--;
+  }
+}
+
+async function attemptSend(url, init) {
   for (let attempt = 0; attempt <= TRANSPORT_RETRIES; attempt++) {
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timer = controller ? setTimeout(() => controller.abort(), TRANSPORT_TIMEOUT_MS) : null;

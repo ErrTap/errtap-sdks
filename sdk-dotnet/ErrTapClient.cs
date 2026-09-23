@@ -17,6 +17,9 @@ public sealed class ErrTapClient : IDisposable
     };
 
     private const int TransportRetries = 2;
+    // When the host is failing, every request throws. Past this many unfinished sends,
+    // drop new telemetry rather than pile up connections in the struggling host.
+    private const int MaxInFlight = 100;
 
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
@@ -129,6 +132,7 @@ public sealed class ErrTapClient : IDisposable
     private void PostJson(string url, object payload)
     {
         if (DateTime.UtcNow.Ticks < Interlocked.Read(ref _pausedUntilTicks)) return;
+        if (_pending.Count >= MaxInFlight) return;
         string body;
         try
         {

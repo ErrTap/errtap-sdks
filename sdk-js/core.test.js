@@ -141,4 +141,26 @@ describe('sdk core transport', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('stops starting new sends once 100 are stuck in flight', async () => {
+    const originalFetch = globalThis.fetch;
+    let started = 0;
+    let release;
+    const gate = new Promise((r) => (release = r));
+    globalThis.fetch = async () => {
+      started++;
+      await gate;
+      return { ok: true, status: 202, headers: new Headers() };
+    };
+    try {
+      configure({ dsn: 'et_test', endpoint: 'https://example.test/ingest/error' });
+      const sends = Array.from({ length: 150 }, (_, i) => captureException(new Error(`storm ${i}`)));
+      await new Promise((r) => setImmediate(r));
+      assert.equal(started, 100);
+      release();
+      await Promise.all(sends);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
