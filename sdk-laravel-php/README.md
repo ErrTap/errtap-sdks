@@ -17,6 +17,13 @@ ERRTAP_ENV=production
 ERRTAP_RELEASE=v1.0.0   # optional, enables regression detection
 ```
 
+These are read through `config('errtap.*')`, so they keep working after
+`php artisan config:cache`. To customize, publish the config file:
+
+```bash
+php artisan vendor:publish --tag=errtap-config
+```
+
 ## Hook it up (one line)
 
 **Laravel 11+** — in `bootstrap/app.php`:

@@ -5,7 +5,8 @@ namespace ErrTap;
 use Illuminate\Support\ServiceProvider;
 
 /**
- * Auto-discovered by Laravel. Reads config from env and initializes the
+ * Auto-discovered by Laravel. Reads config/errtap.php (env-backed, so it survives
+ * `php artisan config:cache`) and initializes the
  * client. It does NOT auto-register the exception hook — add one line to
  * bootstrap/app.php (Laravel 11+):
  *
@@ -19,21 +20,29 @@ use Illuminate\Support\ServiceProvider;
  */
 class ErrTapServiceProvider extends ServiceProvider
 {
+    public function register(): void
+    {
+        $this->mergeConfigFrom(__DIR__ . '/../config/errtap.php', 'errtap');
+    }
+
     public function boot(): void
     {
-        $dsn = env('ERRTAP_DSN');
+        $this->publishes([
+            __DIR__ . '/../config/errtap.php' => $this->app->configPath('errtap.php'),
+        ], 'errtap-config');
+
+        $dsn = config('errtap.dsn');
         if (!$dsn) {
             return;
         }
-        // ERRTAP_ENDPOINT is optional when ERRTAP_DSN is a URL DSN (https://et_…@host)
         $opts = [
             'dsn' => $dsn,
-            'environment' => env('ERRTAP_ENV', env('APP_ENV', 'production')),
-            'release' => env('ERRTAP_RELEASE'),
-            'slowQueryMs' => (float) env('ERRTAP_SLOW_QUERY_MS', 500),
-            'n1Threshold' => (int) env('ERRTAP_N1_THRESHOLD', 10),
+            'environment' => config('errtap.environment', 'production'),
+            'release' => config('errtap.release'),
+            'slowQueryMs' => (float) config('errtap.slow_query_ms', 500),
+            'n1Threshold' => (int) config('errtap.n1_threshold', 10),
         ];
-        $endpoint = env('ERRTAP_ENDPOINT');
+        $endpoint = config('errtap.endpoint');
         if ($endpoint) {
             $opts['endpoint'] = $endpoint;
         } elseif (!str_contains($dsn, '@')) {
@@ -41,9 +50,8 @@ class ErrTapServiceProvider extends ServiceProvider
             $opts['endpoint'] = 'http://localhost:4000/ingest/error';
         }
         ErrTap::init($opts);
-
         // DB monitoring: slow queries + N+1 detection (ERRTAP_DB_MONITOR=false to disable)
-        if (env('ERRTAP_DB_MONITOR', true) && class_exists(\Illuminate\Support\Facades\DB::class)) {
+        if (config('errtap.db_monitor', true) && class_exists(\Illuminate\Support\Facades\DB::class)) {
             \Illuminate\Support\Facades\DB::listen(function ($query) {
                 ErrTap::recordQuery($query->sql, (float) $query->time, $query->connectionName ?? null);
             });
