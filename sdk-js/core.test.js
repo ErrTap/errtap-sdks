@@ -85,4 +85,42 @@ describe('sdk core transport', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('retries server errors but not client errors', async () => {
+    const originalFetch = globalThis.fetch;
+    const hits = { 400: 0, 503: 0 };
+    let status = 400;
+    globalThis.fetch = async () => {
+      hits[status]++;
+      return { ok: false, status, headers: new Headers() };
+    };
+    try {
+      configure({ dsn: 'et_test', endpoint: 'https://example.test/ingest/error' });
+      await captureException(new Error('bad request'));
+      status = 503;
+      await captureException(new Error('server down'));
+      assert.equal(hits[400], 1, 'a 400 fails the same way on retry');
+      assert.equal(hits[503], 3, 'a 503 is worth retrying');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('stops sending until Retry-After once the server answers 429', async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      return { ok: false, status: 429, headers: new Headers({ 'retry-after': '30' }) };
+    };
+    try {
+      configure({ dsn: 'et_test', endpoint: 'https://example.test/ingest/error' });
+      await captureException(new Error('first'));
+      await captureException(new Error('second'));
+      await logger.info('third');
+      assert.equal(calls, 1, 'one request, then paused instead of retrying into the window');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

@@ -30,6 +30,8 @@ public sealed class ErrTapClient : IDisposable
     private readonly IDictionary<string, object?>? _tags;
     private readonly ConcurrentDictionary<int, Task> _pending = new();
     private int _nextPendingId;
+    // set by a 429: sends are dropped until then instead of piling onto a full window
+    private long _pausedUntilTicks;
 
     /// <summary>True when the DSN resolved and events will actually be sent.</summary>
     public bool Enabled => _dsnKey is not null;
@@ -126,6 +128,7 @@ public sealed class ErrTapClient : IDisposable
 
     private void PostJson(string url, object payload)
     {
+        if (DateTime.UtcNow.Ticks < Interlocked.Read(ref _pausedUntilTicks)) return;
         string body;
         try
         {
@@ -161,7 +164,18 @@ public sealed class ErrTapClient : IDisposable
                 using var res = await _http.SendAsync(req, timeout.Token).ConfigureAwait(false);
                 if (res.IsSuccessStatusCode) return;
                 var status = (int) res.StatusCode;
-                shouldRetry = status is 408 or 429 || status >= 500;
+                if (status == 429)
+                {
+                    var retryAfter = res.Headers.RetryAfter;
+                    var wait = retryAfter?.Delta
+                        ?? (retryAfter?.Date is { } at ? at - DateTimeOffset.UtcNow : (TimeSpan?)null)
+                        ?? TimeSpan.FromMinutes(1);
+                    if (wait > TimeSpan.FromHours(1)) wait = TimeSpan.FromHours(1);
+                    Interlocked.Exchange(ref _pausedUntilTicks, DateTime.UtcNow.Add(wait).Ticks);
+                    return;
+                }
+                // other 4xx (bad DSN, too large) fail identically on retry
+                shouldRetry = status == 408 || status >= 500;
             }
             catch
             {

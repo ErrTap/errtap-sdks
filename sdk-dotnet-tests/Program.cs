@@ -5,6 +5,7 @@ using ErrTap;
 await RetriesTransientResponsesAndFlushes();
 await DoesNotRetryClientErrors();
 await SerializationFailuresStayInsideTheSdk();
+await PausesAfterRateLimit();
 
 Console.WriteLine("ErrTap .NET transport tests passed");
 
@@ -52,6 +53,26 @@ static async Task SerializationFailuresStayInsideTheSdk()
     await client.FlushAsync();
 
     Assert(handler.Attempts == 0, "an unserializable payload must not reach transport or throw into the host");
+}
+
+static async Task PausesAfterRateLimit()
+{
+    var handler = new RecordingHandler(_ =>
+    {
+        var res = new HttpResponseMessage((HttpStatusCode)429);
+        res.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(30));
+        return res;
+    });
+    using var http = new HttpClient(handler);
+    using var client = NewClient(http);
+
+    client.CaptureMessage("over quota");
+    await client.FlushAsync();
+    client.CaptureMessage("still inside the Retry-After window");
+    client.Info("so is this log");
+    await client.FlushAsync();
+
+    Assert(handler.Attempts == 1, "a 429 must not be retried, and later sends wait out Retry-After");
 }
 
 static ErrTapClient NewClient(HttpClient http) => new(

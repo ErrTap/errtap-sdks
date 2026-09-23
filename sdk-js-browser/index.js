@@ -10,6 +10,10 @@ let fetchOpts = {};
 const PAYLOAD_MAX_BYTES = 256 * 1024;
 const TRANSPORT_TIMEOUT_MS = 10_000;
 const TRANSPORT_RETRIES = 2;
+const RETRY_AFTER_DEFAULT_MS = 60_000; // the backend's rate windows are per minute
+const RETRY_AFTER_MAX_MS = 60 * 60_000;
+// set by a 429: every send is dropped until then instead of piling onto a full window
+let pausedUntil = 0;
 
 function telemetryId() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -75,6 +79,7 @@ function configure(options, contextFn = () => ({}), extraFetchOpts = {}) {
   };
   context = contextFn;
   fetchOpts = extraFetchOpts;
+  pausedUntil = 0;
 }
 
 function mergeTags(...sources) {
@@ -176,20 +181,35 @@ function buildEnvelope(payload) {
   return serializePayload(body);
 }
 
+function retryAfterMs(res) {
+  const raw = res.headers?.get?.('retry-after');
+  if (raw == null) return RETRY_AFTER_DEFAULT_MS;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const at = Date.parse(raw);
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : RETRY_AFTER_DEFAULT_MS;
+}
+
 async function sendWithRetry(url, init) {
+  if (Date.now() < pausedUntil) return;
   for (let attempt = 0; attempt <= TRANSPORT_RETRIES; attempt++) {
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timer = controller ? setTimeout(() => controller.abort(), TRANSPORT_TIMEOUT_MS) : null;
     try {
       const res = await fetch(url, { ...init, signal: controller?.signal });
       if (timer) clearTimeout(timer);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return;
-    } catch {
-      if (timer) clearTimeout(timer);
-      if (attempt < TRANSPORT_RETRIES) {
-        await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+      if (res.ok) return;
+      if (res.status === 429) {
+        pausedUntil = Date.now() + Math.min(retryAfterMs(res), RETRY_AFTER_MAX_MS);
+        return;
       }
+      // other 4xx (bad DSN, too large) fail identically on retry
+      if (res.status !== 408 && res.status < 500) return;
+    } catch {
+      if (timer) clearTimeout(timer); // network error or timeout: worth retrying
+    }
+    if (attempt < TRANSPORT_RETRIES) {
+      await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
     }
   }
 }
