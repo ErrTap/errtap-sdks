@@ -263,13 +263,14 @@ async function sendWithRetry(url, init) {
   }
 }
 
-/** @param {Error} error */
+/** @param {Error} error — anything thrown is accepted, including `throw null` */
 export function captureException(error, extra = {}) {
+  const e = error !== null && typeof error === 'object' ? error : {};
   return sendError(
     {
-      message: error.message || String(error),
-      type: error.name || 'Error',
-      stacktrace: error.stack,
+      message: e.message || String(error),
+      type: e.name || 'Error',
+      stacktrace: e.stack,
       ...extra,
     },
   );

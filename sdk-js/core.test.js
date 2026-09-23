@@ -123,4 +123,22 @@ describe('sdk core transport', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('accepts whatever was thrown, including null and strings', async () => {
+    const originalFetch = globalThis.fetch;
+    const messages = [];
+    globalThis.fetch = async (_url, init) => {
+      messages.push(JSON.parse(init.body).message);
+      return { ok: true, status: 202, headers: new Headers() };
+    };
+    try {
+      configure({ dsn: 'et_test', endpoint: 'https://example.test/ingest/error' });
+      for (const thrown of [null, undefined, 'plain string', 42]) {
+        await assert.doesNotReject(async () => captureException(thrown));
+      }
+      assert.deepEqual(messages, ['null', 'undefined', 'plain string', '42']);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
