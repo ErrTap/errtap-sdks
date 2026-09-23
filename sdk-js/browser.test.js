@@ -76,4 +76,30 @@ describe('browser send limits', () => {
       assert.equal(calls.filter((c) => c.body.includes('after a log flood')).length, 1);
     });
   });
+
+  it('keeps concurrent keepalive bodies within the browser-wide budget', async () => {
+    const original = globalThis.fetch;
+    const calls = [];
+    let release;
+    const gate = new Promise((r) => (release = r));
+    globalThis.fetch = async (_url, req) => {
+      calls.push(req);
+      await gate;
+      return { ok: true, status: 202, headers: new Headers() };
+    };
+    try {
+      init({ dsn: 'et_test', endpoint: 'https://example.test/ingest/error' });
+      const sends = [1, 2, 3, 4].map((i) =>
+        captureException(new Error(`concurrent ${i}`), { context: { blob: 'x'.repeat(20 * 1024) } }),
+      );
+      await new Promise((r) => setImmediate(r));
+      const keptAlive = calls.filter((c) => c.keepalive).reduce((n, c) => n + Buffer.byteLength(c.body), 0);
+      assert.ok(keptAlive <= 60 * 1024, `${keptAlive} keepalive bytes in flight`);
+      assert.ok(calls.some((c) => c.keepalive === false), 'overflow goes out as a normal fetch');
+      release();
+      await Promise.all(sends);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
 });

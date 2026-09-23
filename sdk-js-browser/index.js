@@ -25,6 +25,9 @@ let pausedUntil = new Map();
 // one endpoint, drop new telemetry rather than pile up sockets and memory in the host.
 const MAX_IN_FLIGHT = 100;
 const inFlight = new Map();
+// Browsers cap keepalive bodies at 64KB summed across every keepalive request in
+// flight, not per request; past the budget a send must go as a normal fetch.
+let keepaliveBytesInFlight = 0;
 
 function telemetryId() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -133,11 +136,6 @@ function transportInit(body) {
     },
     body,
   };
-  // Browsers reject keepalive bodies over 64KB (shared across in-flight requests);
-  // send larger ones as a normal fetch rather than have them fail outright.
-  if (init.keepalive && limits.keepaliveMaxBytes && jsonBytes(body) > limits.keepaliveMaxBytes) {
-    init.keepalive = false;
-  }
   return init;
 }
 
@@ -265,8 +263,16 @@ async function attemptSend(url, init) {
   for (let attempt = 0; attempt <= TRANSPORT_RETRIES; attempt++) {
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timer = controller ? setTimeout(() => controller.abort(), TRANSPORT_TIMEOUT_MS) : null;
+    // reserve keepalive budget for this attempt, or send without keepalive
+    const bytes = init.keepalive && limits.keepaliveMaxBytes ? jsonBytes(init.body) : 0;
+    const keepalive = bytes > 0 && keepaliveBytesInFlight + bytes <= limits.keepaliveMaxBytes;
+    if (keepalive) keepaliveBytesInFlight += bytes;
     try {
-      const res = await fetch(url, { ...init, signal: controller?.signal });
+      const res = await fetch(url, {
+        ...init,
+        ...(bytes > 0 ? { keepalive } : {}),
+        signal: controller?.signal,
+      });
       if (timer) clearTimeout(timer);
       if (res.ok) return;
       if (res.status === 429) {
@@ -277,6 +283,8 @@ async function attemptSend(url, init) {
       if (res.status !== 408 && res.status < 500) return;
     } catch {
       if (timer) clearTimeout(timer); // network error or timeout: worth retrying
+    } finally {
+      if (keepalive) keepaliveBytesInFlight -= bytes;
     }
     if (attempt < TRANSPORT_RETRIES) {
       await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
