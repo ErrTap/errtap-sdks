@@ -113,15 +113,30 @@ Fine for a first release; Option A is less error-prone long-term.
 
 ## Publishing the .NET SDK (NuGet)
 
-The package lives at `sdk/sdk-dotnet` (`PackageId: ErrTap`). Build and push a `.nupkg`:
+The package lives at `sdk/sdk-dotnet` (`PackageId: ErrTap`). It publishes from GitHub Actions
+with **Trusted Publishing** (`.github/workflows/publish-nuget.yml`): no NuGet API key is stored
+anywhere. The workflow exchanges a short-lived GitHub OIDC token for a one-hour key.
+
+One-time setup:
+
+1. nuget.org → your username → **Trusted Publishing** → add a policy: owner = the account or
+   organization that will own `ErrTap`, Repository Owner `ErrTap`, Repository `observer-app`,
+   Workflow File `publish-nuget.yml` (file name only), Environment `nuget`. Include the scope for
+   **publishing new packages** so the first `ErrTap` push is allowed.
+2. GitHub → repo Settings → Secrets and variables → Actions → add `NUGET_USER` = your nuget.org
+   **profile name** (not your email).
+3. Optional: repo Settings → Environments → `nuget` → required reviewers, for a manual approval
+   before every push.
+
+To release, bump `<Version>` in `ErrTap.csproj`, commit, then push a matching tag — the workflow
+fails if the tag and the csproj disagree:
 
 ```bash
-cd sdk/sdk-dotnet
-dotnet pack -c Release
-dotnet nuget push bin/Release/ErrTap.0.2.0.nupkg --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json
+git tag dotnet-v0.2.0 && git push origin dotnet-v0.2.0
 ```
 
-Bump `<Version>` in `ErrTap.csproj` for each release. Same subtree-split option as Laravel if you
+A policy on a private repo starts temporarily active for 7 days and becomes permanent after its
+first successful publish; if nothing publishes in that window, restart it from the policy page. Same subtree-split option as Laravel if you
 want a standalone `errtap-dotnet` repo for NuGet Source Link / symbols.
 
 ---
