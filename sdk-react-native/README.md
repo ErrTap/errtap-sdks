@@ -20,6 +20,19 @@ init({
 });
 ```
 
+
+#### Keep crash reports that happen offline
+
+A fatal JS error ends a release build, so ErrTap holds React Native's crash handler
+for up to 2 seconds while the report is sent. Pass a key-value store and a crash that
+can't be sent in time (offline, flaky network) is saved and delivered on next launch:
+
+```ts
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+init({ dsn: process.env.EXPO_PUBLIC_ERRTAP_DSN!, release: '1.0.0', storage: AsyncStorage });
+```
+
 Manual capture / logs:
 
 ```ts

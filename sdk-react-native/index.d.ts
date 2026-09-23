@@ -6,6 +6,16 @@ export interface ErrTapOptions {
   environment?: string;
   release?: string;
   tags?: Record<string, unknown>;
+  /**
+   * Key-value store for crash persistence, e.g. `@react-native-async-storage/async-storage`.
+   * A fatal JS error is saved before it is sent; if the app dies first, it is sent on
+   * the next launch. Without it, fatal reports rely on the (bounded) wait before exit.
+   */
+  storage?: {
+    getItem(key: string): Promise<string | null> | string | null;
+    setItem(key: string, value: string): Promise<void> | void;
+    removeItem(key: string): Promise<void> | void;
+  };
 }
 
 /** Extra fields merged into the event payload. `fingerprint` overrides server-side grouping. */
@@ -21,7 +31,7 @@ export function resolveDsn(
 ): { key: string; endpoint: string; logEndpoint: string } | null;
 
 export function init(options: ErrTapOptions): void;
-export function captureException(error: Error, extra?: CaptureExtra): void;
+export function captureException(error: unknown, extra?: CaptureExtra): void;
 export function captureMessage(message: string, extra?: CaptureExtra): void;
 
 export const logger: {

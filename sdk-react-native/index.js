@@ -6,6 +6,12 @@ let rejectionHandlerInstalled = false;
 /** @type {{ level: string, message: string, data?: object, ts: number }[]} */
 const breadcrumbs = [];
 const BREADCRUMB_MAX = 20;
+const PAYLOAD_MAX_BYTES = 256 * 1024;
+const SEND_TIMEOUT_MS = 10_000;
+// A fatal JS error gets this long to reach ErrTap (or storage) before React
+// Native's own handler, which ends a release build, is allowed to run.
+const FATAL_FLUSH_MS = 2000;
+const PENDING_FATAL_KEY = 'errtap:pending-fatal';
 
 /**
  * Parse a Sentry-style URL DSN (`https://et_key@host[:port]`) or a bare key.
@@ -80,15 +86,29 @@ export function init(options) {
   ) {
     const previousHandler = errorUtils.getGlobalHandler();
     errorUtils.setGlobalHandler((error, isFatal) => {
-      if (error instanceof Error) {
-        captureException(error, { tags: { fatal: !!isFatal } });
-      } else {
-        captureMessage(String(error), { tags: { fatal: !!isFatal } });
+      // React Native's own handling must run exactly once, whatever happens here
+      const next = () => {
+        if (typeof previousHandler === 'function') previousHandler(error, isFatal);
+      };
+      try {
+        if (!isFatal || globalThis.__DEV__) {
+          captureException(error, { tags: { fatal: !!isFatal } });
+          next();
+          return;
+        }
+        // In release builds the previous handler ends the app, so a fire-and-forget
+        // send almost never leaves the device. Wait (bounded) for send-or-store.
+        Promise.race([reportFatal(error), new Promise((r) => setTimeout(r, FATAL_FLUSH_MS))])
+          .catch(() => {})
+          .then(next);
+      } catch {
+        next();
       }
-      if (typeof previousHandler === 'function') previousHandler(error, isFatal);
     });
     errorHandlerInstalled = true;
   }
+
+  if (cfg.storage) void resendPendingFatal(cfg.storage);
 
   // Hermes exposes a rejection tracker in production. Do not replace React
   // Native's development tracker, and do not monkey-patch Promise on runtimes
@@ -130,16 +150,98 @@ function platformContext() {
   };
 }
 
-/** @param {Error} error */
+function stringifySafely(value) {
+  const seen = new WeakSet();
+  try {
+    return JSON.stringify(value, (_key, item) => {
+      if (typeof item === 'bigint') return String(item);
+      if (item && typeof item === 'object') {
+        if (seen.has(item)) return '[Circular]';
+        seen.add(item);
+      }
+      return item;
+    });
+  } catch {
+    return null;
+  }
+}
+
+function byteLength(value) {
+  return typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(value).byteLength : value.length;
+}
+
+/** Circular- and BigInt-safe, capped at the backend's size limit; null if unserializable. */
+function serialize(body) {
+  const json = stringifySafely(body);
+  if (json === null || byteLength(json) <= PAYLOAD_MAX_BYTES) return json;
+  return stringifySafely({
+    environment: body.environment,
+    release: body.release,
+    level: body.level,
+    type: typeof body.type === 'string' ? body.type.slice(0, 512) : undefined,
+    message: String(body.message ?? '').slice(0, 4096),
+    stacktrace: typeof body.stacktrace === 'string' ? body.stacktrace.slice(0, 8192) : undefined,
+    tags: body.tags,
+    truncated: true,
+  });
+}
+
+function eventId() {
+  return globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+async function safely(fn) {
+  try {
+    return await fn();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Resolves true once the event needs no resend: accepted, or rejected in a way a resend won't fix. */
+function post(url, body, idempotencyKey) {
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), SEND_TIMEOUT_MS) : null;
+  return fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `DSN ${cfg.dsn}`,
+      'Idempotency-Key': idempotencyKey,
+    },
+    body,
+    signal: controller?.signal,
+  })
+    .then((res) => res.ok || (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429))
+    .catch(() => false)
+    .finally(() => timer && clearTimeout(timer));
+}
+
+function exceptionPayload(error, extra) {
+  // anything can be thrown, including null
+  const e = error !== null && typeof error === 'object' ? error : {};
+  return {
+    message: e.message || String(error),
+    type: e.name || 'Error',
+    stacktrace: e.stack,
+    ...extra,
+  };
+}
+
+function errorBody(payload) {
+  const { tags: pTags, context: pCtx, ...rest } = payload;
+  return serialize({
+    environment: cfg.environment,
+    release: cfg.release,
+    ...rest,
+    tags: { platform: 'react-native', ...cfg.tags, ...(pTags || {}) },
+    context: { ...platformContext(), ...(pCtx || {}) },
+  });
+}
+
+/** @param {Error} error — anything thrown is accepted */
 export function captureException(error, extra = {}) {
-  sendError(
-    withBreadcrumbs({
-      message: error.message || String(error),
-      type: error.name || 'Error',
-      stacktrace: error.stack,
-      ...extra,
-    }),
-  );
+  sendError(withBreadcrumbs(exceptionPayload(error, extra)));
 }
 
 export function captureMessage(message, extra = {}) {
@@ -147,38 +249,63 @@ export function captureMessage(message, extra = {}) {
 }
 
 function sendError(payload) {
+  if (!cfg) return Promise.resolve(false);
+  try {
+    const body = errorBody(payload);
+    return body === null ? Promise.resolve(false) : post(cfg.endpoint, body, eventId());
+  } catch {
+    return Promise.resolve(false); // telemetry never throws into the app
+  }
+}
+
+/**
+ * Fatal path: with `storage`, persist first so an app that dies mid-request still
+ * reports on next launch (same idempotency key, so a copy that did land is stored once).
+ */
+async function reportFatal(error) {
   if (!cfg) return;
-  const { tags: pTags, context: pCtx, ...rest } = payload;
-  const body = JSON.stringify({
-    environment: cfg.environment,
-    release: cfg.release,
-    ...rest,
-    tags: { platform: 'react-native', ...cfg.tags, ...(pTags || {}) },
-    context: { ...platformContext(), ...(pCtx || {}) },
-  });
-  fetch(cfg.endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `DSN ${cfg.dsn}` },
-    body,
-  }).catch(() => {});
+  const body = errorBody(withBreadcrumbs(exceptionPayload(error, { tags: { fatal: true } })));
+  if (body === null) return;
+  const id = eventId();
+  const storage = cfg.storage;
+  if (storage) await safely(() => storage.setItem(PENDING_FATAL_KEY, JSON.stringify({ body, id })));
+  if ((await post(cfg.endpoint, body, id)) && storage) {
+    await safely(() => storage.removeItem(PENDING_FATAL_KEY));
+  }
+}
+
+async function resendPendingFatal(storage) {
+  const raw = await safely(() => storage.getItem(PENDING_FATAL_KEY));
+  if (!raw) return;
+  let pending;
+  try {
+    pending = JSON.parse(raw);
+  } catch {
+    await safely(() => storage.removeItem(PENDING_FATAL_KEY));
+    return;
+  }
+  if (typeof pending?.body !== 'string') return void safely(() => storage.removeItem(PENDING_FATAL_KEY));
+  if (await post(cfg.endpoint, pending.body, pending.id || eventId())) {
+    await safely(() => storage.removeItem(PENDING_FATAL_KEY));
+  }
 }
 
 function sendLog(level, message, data) {
   if (!cfg?.logEndpoint) return;
-  pushBreadcrumb(level, message, data);
-  const body = JSON.stringify({
-    level,
-    message: String(message).slice(0, 8192),
-    environment: cfg.environment,
-    release: cfg.release,
-    tags: { platform: 'react-native', ...cfg.tags },
-    context: { ...platformContext(), ...(data || {}) },
-  });
-  fetch(cfg.logEndpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `DSN ${cfg.dsn}` },
-    body,
-  }).catch(() => {});
+  try {
+    pushBreadcrumb(level, message, data);
+    const body = serialize({
+      level,
+      message: String(message).slice(0, 8192),
+      environment: cfg.environment,
+      release: cfg.release,
+      tags: { platform: 'react-native', ...cfg.tags },
+      context: { ...platformContext(), ...(data || {}) },
+    });
+    if (body !== null) void post(cfg.logEndpoint, body, eventId());
+  } catch {
+    // telemetry never throws into the app
+  }
 }
 
 export const logger = {
