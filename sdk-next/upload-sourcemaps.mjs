@@ -4,7 +4,9 @@
 //
 // Usage (as a postbuild step):  errtap-upload-sourcemaps [.next dir]
 // Env:
-//   ERRTAP_DSN | NEXT_PUBLIC_ERRTAP_DSN   the project DSN (URL form or bare key)
+//   ERRTAP_AUTH_TOKEN   upload token (Project settings → Upload tokens). A secret:
+//                       set it in CI only, never as a NEXT_PUBLIC_ variable.
+//   ERRTAP_DSN | NEXT_PUBLIC_ERRTAP_DSN   the project DSN — only used to find the host
 //   ERRTAP_RELEASE | NEXT_PUBLIC_ERRTAP_RELEASE | VERCEL_GIT_COMMIT_SHA   release tag
 //   ERRTAP_ENDPOINT   ingest origin, required only for bare-key DSNs
 //
@@ -52,6 +54,7 @@ async function main() {
   if (process.argv.includes('--selftest')) return selftest();
 
   const dsn = process.env.ERRTAP_DSN || process.env.NEXT_PUBLIC_ERRTAP_DSN;
+  const token = process.env.ERRTAP_AUTH_TOKEN;
   const release =
     process.env.ERRTAP_RELEASE ||
     process.env.NEXT_PUBLIC_ERRTAP_RELEASE ||
@@ -66,10 +69,11 @@ async function main() {
     return;
   }
 
-  if (!dsn || !release) {
+  const missing = [!token && 'ERRTAP_AUTH_TOKEN', !dsn && 'ERRTAP_DSN', !release && 'ERRTAP_RELEASE'].filter(Boolean);
+  if (missing.length) {
     await Promise.all(mapPaths.map((p) => unlink(p).catch(() => {})));
     console.warn(
-      `[errtap] DSN/release missing — removed ${mapPaths.length} sourcemaps without uploading so source is not published.`,
+      `[errtap] ${missing.join(', ')} not set — removed ${mapPaths.length} sourcemaps without uploading so source is not published.`,
     );
     return;
   }
@@ -93,7 +97,7 @@ async function main() {
   for (const batch of planBatches(files)) {
     const res = await fetch(uploadUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `DSN ${resolved.key}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ release, files: batch.map(({ filename, map }) => ({ filename, map })) }),
     });
     if (!res.ok) throw new Error(`[errtap] upload failed ${res.status}: ${await res.text()}`);

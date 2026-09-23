@@ -12,7 +12,8 @@
 //                 or "main.jsbundle". Defaults to the sourcemap name minus ".map".
 //
 // Env:
-//   ERRTAP_DSN        the project DSN (URL form `https://et_…@host`, or a bare key)
+//   ERRTAP_AUTH_TOKEN upload token (Project settings → Upload tokens) — a CI secret
+//   ERRTAP_DSN        the project DSN — only used to find the host
 //   ERRTAP_RELEASE    release tag — MUST equal the `release` you pass to init()
 //   ERRTAP_ENDPOINT   ingest origin, required only for a bare-key DSN
 //
@@ -65,10 +66,11 @@ async function main() {
   const { sourcemap, bundle } = parseArgs(process.argv.slice(2));
   const dsn = process.env.ERRTAP_DSN;
   const release = process.env.ERRTAP_RELEASE;
+  const token = process.env.ERRTAP_AUTH_TOKEN;
 
   if (!sourcemap) throw new Error('[errtap] --sourcemap <path> is required');
-  if (!dsn || !release) {
-    console.warn('[errtap] set ERRTAP_DSN and ERRTAP_RELEASE to upload sourcemaps — skipping.');
+  if (!token || !dsn || !release) {
+    console.warn('[errtap] set ERRTAP_AUTH_TOKEN, ERRTAP_DSN and ERRTAP_RELEASE to upload sourcemaps — skipping.');
     return;
   }
 
@@ -91,7 +93,7 @@ async function main() {
 
   const res = await fetch(uploadUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `DSN ${resolved.key}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ release, files: [{ filename, map }] }),
   });
   if (!res.ok) throw new Error(`[errtap] upload failed ${res.status}: ${await res.text()}`);
