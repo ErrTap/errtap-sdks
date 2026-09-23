@@ -70,7 +70,13 @@ async function main() {
 
   if (!sourcemap) throw new Error('[errtap] --sourcemap <path> is required');
   if (!token || !dsn || !release) {
-    console.warn('[errtap] set ERRTAP_AUTH_TOKEN, ERRTAP_DSN and ERRTAP_RELEASE to upload sourcemaps — skipping.');
+    if (dsn && release && !token) {
+      console.error(
+        '[errtap] Sourcemap uploads now need an upload token: create one in Project settings → Upload tokens and set ERRTAP_AUTH_TOKEN — skipping.',
+      );
+    } else {
+      console.warn('[errtap] set ERRTAP_AUTH_TOKEN, ERRTAP_DSN and ERRTAP_RELEASE to upload sourcemaps — skipping.');
+    }
     return;
   }
 

@@ -72,9 +72,16 @@ async function main() {
   const missing = [!token && 'ERRTAP_AUTH_TOKEN', !dsn && 'ERRTAP_DSN', !release && 'ERRTAP_RELEASE'].filter(Boolean);
   if (missing.length) {
     await Promise.all(mapPaths.map((p) => unlink(p).catch(() => {})));
-    console.warn(
-      `[errtap] ${missing.join(', ')} not set — removed ${mapPaths.length} sourcemaps without uploading so source is not published.`,
-    );
+    const message = `[errtap] ${missing.join(', ')} not set — removed ${mapPaths.length} sourcemaps without uploading so source is not published.`;
+    if (dsn && release && !token) {
+      // Upload was configured, so this is an upgrade from DSN-authenticated uploads:
+      // say so loudly instead of silently losing symbolication.
+      console.error(
+        `${message}\n[errtap] Sourcemap uploads now need an upload token: create one in Project settings → Upload tokens and set ERRTAP_AUTH_TOKEN in your build environment.`,
+      );
+    } else {
+      console.warn(message);
+    }
     return;
   }
 
