@@ -16,7 +16,7 @@ init({
 });
 ```
 
-`init` registers `uncaughtException` / `unhandledRejection` handlers. After reporting an uncaught exception the process exits (pass `exitOnFatal: false` to keep it alive). Manual capture and logs:
+`init` registers `uncaughtException` / `unhandledRejection` handlers. After an uncaught exception or unhandled rejection it prints the error, reports it (waiting at most 2s), then exits with code 1 — the same outcome as Node without the SDK. `--unhandled-rejections=warn|none` is respected; pass `exitOnFatal: false` to keep the process alive. Manual capture and logs:
 
 ```js
 import { captureException, captureMessage, logger } from '@errtap/node';

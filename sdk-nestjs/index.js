@@ -33,7 +33,9 @@ export class ErrTapModule {
    * @returns {import('@nestjs/common').DynamicModule}
    */
   static forRoot(options) {
-    init({ exitOnFatal: false, ...options });
+    // Nest registers no process error handlers of its own, so after an uncaught
+    // exception the process should crash and restart as it would without the SDK.
+    init(options);
     return {
       module: ErrTapModule,
       global: true,

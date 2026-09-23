@@ -37,4 +37,4 @@ try {
 }
 ```
 
-`exitOnFatal` defaults to `false` so Nest keeps owning process lifecycle.
+After reporting an uncaught exception or unhandled rejection the process exits with code 1, as Node would without the SDK, so your supervisor restarts it. Pass `exitOnFatal: false` only if something else owns crash handling.
