@@ -1,6 +1,6 @@
 {
   "name": "@errtap/next",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "ErrTap SDK for Next.js (App Router client + server)",
   "type": "module",
   "main": "client.js",
@@ -34,8 +34,8 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@errtap/browser": "^0.2.0",
-    "@errtap/node": "^0.2.0"
+    "@errtap/browser": "^0.3.0",
+    "@errtap/node": "^0.3.0"
   },
   "peerDependencies": {
     "next": ">=13.0.0"
