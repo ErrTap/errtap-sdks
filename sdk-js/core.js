@@ -4,6 +4,11 @@
 let cfg = null;
 let context = () => ({});
 let fetchOpts = {};
+// per-runtime send limits (the browser sets these; see browser.js)
+let limits = {};
+let recentErrors = new Map();
+let minuteStart = 0;
+let sentThisMinute = 0;
 const PAYLOAD_MAX_BYTES = 256 * 1024;
 const TRANSPORT_TIMEOUT_MS = 10_000;
 const TRANSPORT_RETRIES = 2;
@@ -61,7 +66,7 @@ export function resolveDsn(dsn, endpointOverride) {
   };
 }
 
-export function configure(options, contextFn = () => ({}), extraFetchOpts = {}) {
+export function configure(options, contextFn = () => ({}), extraFetchOpts = {}, sendLimits = {}) {
   const resolved = resolveDsn(options.dsn, options.endpoint);
   if (!resolved) {
     cfg = null;
@@ -76,7 +81,54 @@ export function configure(options, contextFn = () => ({}), extraFetchOpts = {}) 
   };
   context = contextFn;
   fetchOpts = extraFetchOpts;
+  limits = sendLimits;
+  recentErrors = new Map();
+  minuteStart = 0;
+  sentThisMinute = 0;
   pausedUntil = 0;
+}
+
+/** Per-minute cap: one looping error must not burn the project's rate limit and quota. */
+function withinRate() {
+  if (!limits.maxPerMinute) return true;
+  const now = Date.now();
+  if (now - minuteStart >= 60_000) {
+    minuteStart = now;
+    sentThisMinute = 0;
+  }
+  return ++sentThisMinute <= limits.maxPerMinute;
+}
+
+/** Drop an error identical to one sent within `dedupeMs` (render loops, rAF, intervals). */
+function isRepeat(payload) {
+  if (!limits.dedupeMs) return false;
+  const key = `${payload.type}|${payload.message}|${String(payload.stacktrace ?? '').slice(0, 1000)}`;
+  const now = Date.now();
+  const last = recentErrors.get(key);
+  if (last !== undefined && now - last < limits.dedupeMs) return true;
+  recentErrors.delete(key); // re-insert so the map stays in recency order
+  recentErrors.set(key, now);
+  if (recentErrors.size > 200) recentErrors.delete(recentErrors.keys().next().value);
+  return false;
+}
+
+function transportInit(body) {
+  const init = {
+    method: 'POST',
+    ...fetchOpts,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `DSN ${cfg.dsn}`,
+      'Idempotency-Key': telemetryId(),
+    },
+    body,
+  };
+  // Browsers reject keepalive bodies over 64KB (shared across in-flight requests);
+  // send larger ones as a normal fetch rather than have them fail outright.
+  if (init.keepalive && limits.keepaliveMaxBytes && jsonBytes(body) > limits.keepaliveMaxBytes) {
+    init.keepalive = false;
+  }
+  return init;
 }
 
 function mergeTags(...sources) {
@@ -229,22 +281,15 @@ export function captureMessage(message, extra = {}) {
 
 function sendError(payload) {
   if (!cfg) return;
+  if (isRepeat(payload) || !withinRate()) return Promise.resolve();
   const body = buildEnvelope(payload);
   if (body === null) return Promise.resolve();
-  return sendWithRetry(cfg.endpoint, {
-    method: 'POST',
-    ...fetchOpts,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `DSN ${cfg.dsn}`,
-      'Idempotency-Key': telemetryId(),
-    },
-    body,
-  });
+  return sendWithRetry(cfg.endpoint, transportInit(body));
 }
 
 function sendLog(level, message, data) {
   if (!cfg?.logEndpoint) return;
+  if (!withinRate()) return Promise.resolve();
   const runtime = runtimeContext();
   const body = serializePayload({
     ...runtime,
@@ -256,16 +301,7 @@ function sendLog(level, message, data) {
     context: mergeContext(runtime.context, data),
   });
   if (body === null) return Promise.resolve();
-  return sendWithRetry(cfg.logEndpoint, {
-    method: 'POST',
-    ...fetchOpts,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `DSN ${cfg.dsn}`,
-      'Idempotency-Key': telemetryId(),
-    },
-    body,
-  });
+  return sendWithRetry(cfg.logEndpoint, transportInit(body));
 }
 
 export const logger = {

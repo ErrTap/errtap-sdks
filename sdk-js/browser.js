@@ -16,6 +16,8 @@ export function init(options) {
     }),
     // ponytail: sendBeacon can't carry the Authorization header, so keepalive fetch is the send path
     { keepalive: true },
+    // ponytail: a fixed per-page cap and dedupe window; make them options if a customer needs to tune them
+    { dedupeMs: 60_000, maxPerMinute: 60, keepaliveMaxBytes: 60 * 1024 },
   );
   if (typeof window === 'undefined' || listenersInstalled) return;
   listenersInstalled = true;
