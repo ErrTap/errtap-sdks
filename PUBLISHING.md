@@ -18,13 +18,13 @@ Current release candidates:
 
 | Package | Version |
 |---|---|
-| `@errtap/browser` | `0.4.0` |
-| `@errtap/node` | `0.4.0` |
-| `@errtap/nestjs` | `0.4.0` |
-| `@errtap/next` | `0.5.0` |
-| `@errtap/react-native` | `0.4.0` (published, unchanged) |
-| `errtap/laravel` | `v0.2.0` git tag in the standalone repo |
-| `ErrTap` | `0.2.0` (published) |
+| `@errtap/browser` | `0.4.1` |
+| `@errtap/node` | `0.4.1` |
+| `@errtap/nestjs` | `0.4.1` |
+| `@errtap/next` | `0.5.1` |
+| `@errtap/react-native` | `0.4.1` |
+| `errtap/laravel` | `v0.2.0` (published) |
+| `ErrTap` | `0.2.1` |
 
 > **No build step.** The npm packages ship the hand-written files declared in each package's
 > `files` field as-is.

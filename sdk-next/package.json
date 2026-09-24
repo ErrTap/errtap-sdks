@@ -1,6 +1,6 @@
 {
   "name": "@errtap/next",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "ErrTap SDK for Next.js (App Router client + server)",
   "type": "module",
   "main": "client.js",

@@ -1,6 +1,6 @@
 {
   "name": "@errtap/nestjs",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "ErrTap NestJS error tracking module",
   "type": "module",
   "main": "index.js",
