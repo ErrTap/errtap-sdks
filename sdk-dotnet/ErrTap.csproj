@@ -13,7 +13,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>errtap;error-tracking;aspnetcore;observability</PackageTags>
-    <RepositoryUrl>https://github.com/ErrTap/observer-app</RepositoryUrl>
+    <RepositoryUrl>https://github.com/ErrTap/errtap-sdks</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>

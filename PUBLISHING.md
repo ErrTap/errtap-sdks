@@ -80,31 +80,33 @@ npm publish -w @errtap/browser --dry-run  # prints the exact file list that woul
 
 ---
 
+## Public mirrors
+
+The SDKs are developed in this repo and mirrored, with history, by
+`.github/workflows/sync-sdk-mirrors.yml` on every push to `main` that touches `sdk/`:
+
+| Mirror | Contents | Used by |
+|---|---|---|
+| [`ErrTap/errtap-sdks`](https://github.com/ErrTap/errtap-sdks) | everything under `sdk/` | npm and NuGet "Repository" / "Issues" links |
+| [`ErrTap/errtap-laravel`](https://github.com/ErrTap/errtap-laravel) | `sdk/sdk-laravel-php/` | Packagist (it needs `composer.json` at a repo root) |
+
+Never commit to a mirror directly — the next sync can't fast-forward and fails. The workflow
+needs the `SDK_MIRROR_TOKEN` secret: a fine-grained personal access token with **Contents:
+read and write** on those two repositories only. Run it by hand from the Actions tab
+(**Sync SDK mirrors → Run workflow**) if a push didn't trigger it.
+
 ## Publishing the Laravel SDK (Packagist)
 
-⚠️ **Packagist reads `composer.json` from a repo root, not a subdirectory.** Since this SDK lives
-at `sdk/sdk-laravel-php`, it needs its own repo. Two options:
+Packagist versions from git tags on `errtap-laravel`. Once the mirror has synced the release
+commit, tag it there:
 
-### Option A — split to a standalone repo (recommended)
-After committing the release, publish just this subdirectory as its own history using
-`git subtree split`:
 ```bash
-# from the monorepo root
-git subtree split --prefix=sdk/sdk-laravel-php -b errtap-laravel-release
-git push git@github.com:ErrTap/errtap-laravel.git errtap-laravel-release:main
+git subtree split --prefix=sdk/sdk-laravel-php   # prints the commit the mirror's main points at
+git push https://github.com/ErrTap/errtap-laravel.git <that-sha>:refs/tags/v0.2.0
 ```
-Then in the standalone `errtap-laravel` repo, tag a release (Packagist derives versions from git tags):
-```bash
-git tag v0.2.0 && git push origin v0.2.0
-```
-Finally, on Packagist: **Submit** → paste `https://github.com/ErrTap/errtap-laravel` →
-enable the **GitHub webhook** it offers so future tags auto-update.
 
-Re-run the `subtree split`/push on each release to sync the standalone repo, then tag again.
-
-### Option B — quick and dirty
-Copy `sdk/sdk-laravel-php/*` into a fresh `errtap-laravel` repo by hand, commit, tag, submit.
-Fine for a first release; Option A is less error-prone long-term.
+With the Packagist GitHub webhook enabled the new version appears within a minute; otherwise
+press **Update** on https://packagist.org/packages/errtap/laravel.
 
 > `composer.json` intentionally has **no `version` field** — Packagist takes the version from the
 > git tag, which is the correct pattern. Don't add one.

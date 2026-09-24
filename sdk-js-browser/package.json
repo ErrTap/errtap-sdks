@@ -12,12 +12,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ErrTap/observer-app.git",
-    "directory": "sdk/sdk-js-browser"
+    "url": "git+https://github.com/ErrTap/errtap-sdks.git",
+    "directory": "sdk-js-browser"
   },
   "homepage": "https://docs.errtap.com",
   "bugs": {
-    "url": "https://github.com/ErrTap/observer-app/issues"
+    "url": "https://github.com/ErrTap/errtap-sdks/issues"
   },
   "keywords": [
     "error-tracking",
