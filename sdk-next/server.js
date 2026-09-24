@@ -2,6 +2,8 @@ import {
   init as nodeInit,
   captureException,
   captureMessage,
+  captureFeedback,
+  lastEventId,
   logger,
   resolveDsn,
 } from '@errtap/node';
@@ -37,4 +39,4 @@ export async function onRequestError(error, request = {}, context = {}) {
   });
 }
 
-export { captureException, captureMessage, logger, resolveDsn };
+export { captureException, captureMessage, captureFeedback, lastEventId, logger, resolveDsn };

@@ -23,6 +23,8 @@ export declare function onRequestError(
 export {
   captureException,
   captureMessage,
+  captureFeedback,
+  lastEventId,
   logger,
   resolveDsn,
 } from '@errtap/node';

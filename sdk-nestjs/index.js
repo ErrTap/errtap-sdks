@@ -4,6 +4,8 @@ import {
   init,
   captureException,
   captureMessage,
+  captureFeedback,
+  lastEventId,
   logger,
   resolveDsn,
 } from '@errtap/node';
@@ -44,4 +46,4 @@ export class ErrTapModule {
   }
 }
 
-export { init, captureException, captureMessage, logger, resolveDsn };
+export { init, captureException, captureMessage, captureFeedback, lastEventId, logger, resolveDsn };
