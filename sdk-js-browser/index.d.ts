@@ -23,6 +23,17 @@ export function resolveDsn(
 export function init(options: ErrTapOptions): void;
 export function captureException(error: Error, extra?: CaptureExtra): Promise<void>;
 export function captureMessage(message: string, extra?: CaptureExtra): Promise<void>;
+/** Id of the most recent error sent by this SDK, for linking feedback to it. */
+export function lastEventId(): string | undefined;
+/** Send what the user was doing when it broke; linked to `eventId` (default: the last error sent). */
+export function captureFeedback(feedback: {
+  message: string;
+  name?: string;
+  email?: string;
+  /** defaults to the current page in browsers */
+  url?: string;
+  eventId?: string;
+}): Promise<void>;
 
 export const logger: {
   debug(message: string, data?: Record<string, unknown>): Promise<void>;

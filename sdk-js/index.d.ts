@@ -18,6 +18,17 @@ export function resolveDsn(
 export function init(options: ErrTapOptions): void;
 export function captureException(error: Error, extra?: Record<string, unknown>): Promise<void>;
 export function captureMessage(message: string, extra?: Record<string, unknown>): Promise<void>;
+/** Id of the most recent error sent by this SDK, for linking feedback. */
+export function lastEventId(): string | undefined;
+export function captureFeedback(feedback: {
+  message: string;
+  name?: string;
+  email?: string;
+  /** defaults to the current page in browsers */
+  url?: string;
+  /** defaults to lastEventId() */
+  eventId?: string;
+}): Promise<void>;
 
 export const logger: {
   debug(message: string, data?: Record<string, unknown>): Promise<void> | void;

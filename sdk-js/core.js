@@ -122,14 +122,14 @@ function isRepeat(payload) {
   return false;
 }
 
-function transportInit(body) {
+function transportInit(body, id = telemetryId()) {
   const init = {
     method: 'POST',
     ...fetchOpts,
     headers: {
       'Content-Type': 'application/json',
       Authorization: `DSN ${cfg.dsn}`,
-      'Idempotency-Key': telemetryId(),
+      'Idempotency-Key': id,
     },
     body,
   };
@@ -306,12 +306,43 @@ export function captureMessage(message, extra = {}) {
   return sendError({ message, type: 'Message', ...extra });
 }
 
+let lastId;
+
+/** Id of the most recent error sent — pass it to captureFeedback to link the two. */
+export function lastEventId() {
+  return lastId;
+}
+
 function sendError(payload) {
   if (!cfg) return;
   if (isRepeat(payload) || !withinRate('error')) return Promise.resolve();
   const body = buildEnvelope(payload);
   if (body === null) return Promise.resolve();
-  return sendWithRetry(cfg.endpoint, transportInit(body));
+  // the Idempotency-Key doubles as the event id the server stores it under
+  lastId = telemetryId();
+  return sendWithRetry(cfg.endpoint, transportInit(body, lastId));
+}
+
+/**
+ * What the user was doing when it broke. Linked to the error from `eventId`
+ * (defaults to the last error this SDK sent) once that error is stored.
+ * @param {{ message: string, name?: string, email?: string, url?: string, eventId?: string }} feedback
+ */
+export function captureFeedback(feedback) {
+  if (!cfg || !feedback?.message) return Promise.resolve();
+  const endpoint = cfg.endpoint.replace(/\/ingest\/error\/?$/, '/ingest/feedback');
+  if (endpoint === cfg.endpoint) return Promise.resolve(); // custom endpoint: no feedback route to derive
+  const pageUrl = typeof location !== 'undefined' ? location.href : undefined;
+  const body = serializePayload({
+    message: String(feedback.message).slice(0, 5000),
+    name: feedback.name,
+    email: feedback.email,
+    url: feedback.url ?? pageUrl,
+    environment: cfg.environment,
+    eventId: feedback.eventId ?? lastId,
+  });
+  if (body === null) return Promise.resolve();
+  return sendWithRetry(endpoint, transportInit(body));
 }
 
 function sendLog(level, message, data) {

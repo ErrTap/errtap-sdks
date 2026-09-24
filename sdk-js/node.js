@@ -1,6 +1,6 @@
-import { configure, captureException, captureMessage, logger, resolveDsn } from './core.js';
+import { configure, captureException, captureFeedback, captureMessage, lastEventId, logger, resolveDsn } from './core.js';
 
-export { captureException, captureMessage, logger, resolveDsn };
+export { captureException, captureFeedback, captureMessage, lastEventId, logger, resolveDsn };
 
 // re-init (e.g. in tests or hot-reload) would otherwise stack a duplicate pair of
 // these listeners on `process` every call; drop the prior pair first.

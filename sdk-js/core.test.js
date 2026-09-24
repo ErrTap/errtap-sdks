@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { captureException, configure, logger } from './core.js';
+import { captureException, captureFeedback, configure, lastEventId, logger } from './core.js';
 
 describe('sdk core transport', () => {
   it('keeps oversized payloads valid JSON within the transport limit', async () => {
@@ -184,3 +184,43 @@ describe('sdk core transport', () => {
     }
   });
 });
+
+describe('user feedback', () => {
+  it('links feedback to the last error through the id the error was sent under', async () => {
+    const originalFetch = globalThis.fetch;
+    const requests = [];
+    globalThis.fetch = async (url, init) => {
+      requests.push({ url, init });
+      return { ok: true };
+    };
+    try {
+      configure({ dsn: 'et_test', endpoint: 'https://example.test/ingest/error' });
+      await captureException(new Error('checkout failed ' + Math.random()));
+      const errorId = requests[0].init.headers['Idempotency-Key'];
+      assert.equal(lastEventId(), errorId);
+
+      await captureFeedback({ message: 'Pay did nothing', email: 'pat@example.com' });
+      assert.equal(requests[1].url, 'https://example.test/ingest/feedback');
+      const body = JSON.parse(requests[1].init.body);
+      assert.equal(body.message, 'Pay did nothing');
+      assert.equal(body.eventId, errorId);
+      assert.notEqual(requests[1].init.headers['Idempotency-Key'], errorId);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('ignores empty feedback', async () => {
+    let called = false;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ((called = true), { ok: true });
+    try {
+      configure({ dsn: 'et_test', endpoint: 'https://example.test/ingest/error' });
+      await captureFeedback({ message: '' });
+      assert.equal(called, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+

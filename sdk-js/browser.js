@@ -1,6 +1,6 @@
-import { configure, captureException, captureMessage, logger, resolveDsn } from './core.js';
+import { configure, captureException, captureFeedback, captureMessage, lastEventId, logger, resolveDsn } from './core.js';
 
-export { captureException, captureMessage, logger, resolveDsn };
+export { captureException, captureFeedback, captureMessage, lastEventId, logger, resolveDsn };
 
 let listenersInstalled = false;
 
