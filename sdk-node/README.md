@@ -1,35 +1,173 @@
 # @errtap/node
 
-Node.js error tracking for [ErrTap](https://www.errtap.com) — captures uncaught exceptions, unhandled rejections, and structured logs.
+Node.js SDK for [ErrTap](https://www.errtap.com). Captures uncaught exceptions and unhandled promise rejections, and sends handled errors, structured logs and user feedback. No dependencies.
+
+- Package: [`@errtap/node`](https://www.npmjs.com/package/@errtap/node) (current: 0.4.1)
+- Docs: [docs.errtap.com/platforms/nodejs](https://docs.errtap.com/platforms/nodejs)
+- Framework wrappers built on this package: [`@errtap/nestjs`](../sdk-nestjs), [`@errtap/next`](../sdk-next) (server side)
+
+## Install
 
 ```bash
 npm i @errtap/node
 ```
 
+## Quick start
+
+Call `init` as early as possible, before other code that might throw:
+
 ```js
 import { init } from '@errtap/node';
 
 init({
-  dsn: process.env.ERRTAP_DSN, // https://et_…@host, from your project's settings page
-  environment: process.env.NODE_ENV,
-  release: process.env.GIT_SHA,
+  dsn: process.env.ERRTAP_DSN, // https://et_<key>@<host>/<project>
+  environment: process.env.NODE_ENV ?? 'production',
+  release: process.env.APP_VERSION,
 });
 ```
 
-`init` registers `uncaughtException` / `unhandledRejection` handlers. After an uncaught exception or unhandled rejection it prints the error, reports it (waiting at most 2s), then exits with code 1 — the same outcome as Node without the SDK. `--unhandled-rejections=warn|none` is respected; pass `exitOnFatal: false` to keep the process alive. Manual capture and logs:
+Copy the DSN from **Project settings → Client keys**. Keep it in an environment variable rather than in source.
+
+After `init`, the SDK registers `uncaughtException` and `unhandledRejection` handlers on `process`. Calling `init` again replaces them instead of stacking duplicates. On runtimes with a partial `process` (Edge, some workers) the handlers are skipped and manual capture still works.
+
+## Configuration
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `dsn` | `string` | required | URL DSN (`https://et_<key>@<host>/<project>`), or a bare `et_…` key when `endpoint` is set |
+| `endpoint` | `string` | derived from the DSN | Full ingest URL override, e.g. `https://<host>/ingest/error` |
+| `environment` | `string` | `'production'` | Environment attached to every event and log |
+| `release` | `string` | none | Release identifier. Enables regression detection and release health |
+| `tags` | `Record<string, unknown>` | none | Tags attached to every event and log |
+| `exitOnFatal` | `boolean` | `true` | Exit with code 1 after reporting an uncaught exception (see below) |
+
+If the DSN can't be parsed, the SDK becomes a no-op instead of throwing.
+
+### Fatal errors
+
+Registering an `uncaughtException` listener normally stops Node from crashing. To keep Node's default behaviour, with `exitOnFatal: true` the SDK prints the error, waits up to 2 seconds for the report to send, then calls `process.exit(1)`.
+
+Unhandled rejections are treated the same way unless the process runs with `--unhandled-rejections=warn` or `none`, in which case they are reported and the process keeps running.
+
+Set `exitOnFatal: false` when a framework owns the process lifecycle. `@errtap/next` does this for you.
+
+## Capturing errors
 
 ```js
-import { captureException, captureMessage, logger } from '@errtap/node';
+import { captureException, captureMessage } from '@errtap/node';
 
-await logger.info('job started', { jobId });
 try {
-  await work();
-} catch (e) {
-  await captureException(e, { tags: { job: 'imports' } });
-  throw e;
+  await syncInvoices();
+} catch (err) {
+  await captureException(err, {
+    tags: { job: 'invoice-sync' },
+    context: { invoiceId: 'inv_42' },
+    user: { id: 'u_193' },
+  });
 }
+
+captureMessage('stripe webhook skipped', { level: 'warning' });
 ```
 
-Using NestJS or Next.js? Prefer `@errtap/nestjs` / `@errtap/next`, which wrap this package.
+Both functions return a promise that resolves once the send finishes (they never reject). The second argument is merged into the event:
 
-Docs: https://docs.errtap.com
+| Field | Type | Description |
+| --- | --- | --- |
+| `tags` | `Record<string, unknown>` | Merged over the `init` tags |
+| `context` | `Record<string, unknown>` | Arbitrary extra data |
+| `user` | `{ id?, email?, … }` | `id` or `email` drives the "users affected" count |
+| `level` | `string` | `error` (default), `warning`, `info`, `fatal` |
+| `fingerprint` | `string` | Custom grouping key |
+| `release` / `environment` | `string` | Override the `init` value for this event |
+| `url` | `string` | Request URL or route |
+
+The SDK adds the Node version and platform to every event. It does not keep global breadcrumbs or request context, so pass them on each call.
+
+### Express
+
+The package doesn't install middleware. Capture from your error handler:
+
+```js
+app.use((err, req, res, next) => {
+  void captureException(err, { url: req.originalUrl, tags: { method: req.method } });
+  next(err);
+});
+```
+
+## Logs
+
+```js
+import { logger } from '@errtap/node';
+
+logger.info('job started', { jobId: 'job_1' });
+logger.error('payment provider timeout', { provider: 'stripe' });
+```
+
+Levels: `debug`, `info`, `warn` (alias `warning`), `error`. Logs appear on the project's **Logs** page.
+
+## User feedback
+
+```js
+import { captureFeedback } from '@errtap/node';
+
+await captureFeedback({
+  message: 'Export never finished',
+  email: 'user@example.com',
+  eventId, // from lastEventId(), or omit to link the last error this process sent
+});
+```
+
+`lastEventId()` returns the id of the most recent error sent. Feedback does not count toward your event quota.
+
+## Releases and source maps
+
+Set `release` to the same value you deploy, such as a git SHA. Mark deploys from CI with an upload token (Project settings → Upload tokens):
+
+```bash
+curl -X POST https://<host>/ingest/release \
+  -H "Authorization: Bearer $ERRTAP_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"version":"'"$GIT_SHA"'","environment":"production"}'
+```
+
+If you bundle or minify server code, upload its source maps to `/ingest/sourcemaps` the same way as for the browser SDK. See [Source maps](https://docs.errtap.com/platforms/browser#source-maps-de-minify-stack-traces).
+
+## Cron heartbeats
+
+The SDK has no heartbeat helper. Create a monitor under **Cron** in the dashboard, then POST its ping URL when a job succeeds:
+
+```js
+await fetch(process.env.INVOICE_HEARTBEAT_URL, { method: 'POST' });
+```
+
+The token in the URL authenticates the ping; no DSN header is needed.
+
+## Delivery behaviour
+
+- Each request carries an `Idempotency-Key`; retries are stored once.
+- Requests time out after 10 seconds. Network errors, timeouts and `5xx` are retried twice; other `4xx` are not.
+- On `429`, the SDK pauses that endpoint for the `Retry-After` period and drops new events meanwhile.
+- Errors and logs have separate budgets, so a noisy logger can't block error delivery.
+- Payloads over 256 KB are truncated to the essentials instead of being rejected.
+
+## Troubleshooting
+
+- **Nothing appears.** A `202` means the event was queued, not stored. Confirm the host in the DSN is reachable from the server.
+- **`401`.** The key is wrong or revoked.
+- **Process exits after an error.** That's `exitOnFatal: true`, matching Node's default crash behaviour. Set it to `false` if something else manages restarts.
+- **Short-lived scripts lose events.** `await` the `captureException` call before the script exits.
+
+## Requirements
+
+- Node.js 18 or later (uses the global `fetch`).
+- ES module package, with TypeScript definitions included.
+
+## Links
+
+- [Node.js docs](https://docs.errtap.com/platforms/nodejs)
+- [Ingest API](https://docs.errtap.com/api/ingest)
+- [Issues](https://github.com/ErrTap/errtap-sdks/issues)
+
+## License
+
+MIT

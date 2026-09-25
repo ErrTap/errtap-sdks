@@ -1,25 +1,40 @@
 # ErrTap SDKs
 
-Official SDKs for [ErrTap](https://www.errtap.com) — error tracking, uptime and cron monitoring, logs and alerts for startups.
+Official SDKs for [ErrTap](https://www.errtap.com): error tracking, logs, Web Vitals, uptime and cron monitoring, and alerts for startups.
 
-| Package | Platform | Install | Docs |
-|---|---|---|---|
-| [`@errtap/browser`](https://www.npmjs.com/package/@errtap/browser) | Browser / any JS framework | `npm i @errtap/browser` | [Browser](https://docs.errtap.com/platforms/browser) |
-| [`@errtap/node`](https://www.npmjs.com/package/@errtap/node) | Node.js | `npm i @errtap/node` | [Node.js](https://docs.errtap.com/platforms/nodejs) |
-| [`@errtap/next`](https://www.npmjs.com/package/@errtap/next) | Next.js | `npm i @errtap/next` | [Next.js](https://docs.errtap.com/platforms/nextjs) |
-| [`@errtap/nestjs`](https://www.npmjs.com/package/@errtap/nestjs) | NestJS | `npm i @errtap/nestjs` | [NestJS](https://docs.errtap.com/platforms/nestjs) |
-| [`@errtap/react-native`](https://www.npmjs.com/package/@errtap/react-native) | React Native / Expo | `npm i @errtap/react-native` | [React Native](https://docs.errtap.com/platforms/react-native) |
-| [`errtap/laravel`](https://packagist.org/packages/errtap/laravel) | Laravel (PHP) | `composer require errtap/laravel` | [Laravel](https://docs.errtap.com/platforms/laravel) |
-| [`ErrTap`](https://www.nuget.org/packages/ErrTap) | ASP.NET Core | `dotnet add package ErrTap` | [.NET](https://docs.errtap.com/platforms/dotnet) |
+| Package | Platform | Version | Install | Docs |
+| --- | --- | --- | --- | --- |
+| [`@errtap/browser`](./sdk-js-browser) | Browser, any JS framework | 0.5.0 | `npm i @errtap/browser` | [Browser](https://docs.errtap.com/platforms/browser) |
+| [`@errtap/node`](./sdk-node) | Node.js 18+ | 0.4.1 | `npm i @errtap/node` | [Node.js](https://docs.errtap.com/platforms/nodejs) |
+| [`@errtap/next`](./sdk-next) | Next.js 13+ (App Router) | 0.5.2 | `npm i @errtap/next` | [Next.js](https://docs.errtap.com/platforms/nextjs) |
+| [`@errtap/nestjs`](./sdk-nestjs) | NestJS 10+ | 0.4.1 | `npm i @errtap/nestjs` | [NestJS](https://docs.errtap.com/platforms/nestjs) |
+| [`@errtap/react-native`](./sdk-react-native) | React Native 0.72+, Expo | 0.4.1 | `npm i @errtap/react-native` | [React Native](https://docs.errtap.com/platforms/react-native) |
+| [`errtap/laravel`](./sdk-laravel-php) | Laravel, PHP 8.1+ | see Packagist | `composer require errtap/laravel` | [Laravel](https://docs.errtap.com/platforms/laravel) |
+| [`ErrTap`](./sdk-dotnet) | ASP.NET Core, .NET 8+ | 0.2.1 | `dotnet add package ErrTap` | [.NET](https://docs.errtap.com/platforms/dotnet) |
 
-Already on a Sentry SDK? Point it at your ErrTap DSN — see [Sentry SDKs](https://docs.errtap.com/platforms/sentry-sdks).
+Already using a Sentry SDK? Point it at your ErrTap DSN. See [Sentry SDKs](https://docs.errtap.com/platforms/sentry-sdks).
+
+## What each SDK covers
+
+| | Browser | Node | Next | NestJS | React Native | Laravel | .NET |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Uncaught errors | yes | yes | yes (both sides) | yes (filter) | yes | via exception hook | yes (middleware) |
+| Manual capture | yes | yes | yes | yes | yes | yes | yes |
+| Structured logs | yes | yes | yes | yes | yes | yes | yes |
+| User feedback | yes | yes | yes | yes | no | no | no |
+| Web Vitals | yes | no | yes (client) | no | no | no | no |
+| Source-map uploader | curl | curl | `errtap-upload-sourcemaps` | curl | `errtap-upload-sourcemaps` | n/a | n/a |
+| Slow query / N+1 | no | no | no | no | no | yes | no |
+| Queue diagnostics | no | no | no | no | no | yes | no |
+
+Cron heartbeats are plain HTTP pings to a monitor URL and work from any language.
 
 ## Quick start
 
 ```js
 import { init, captureException } from '@errtap/browser';
 
-init({ dsn: 'https://et_<key>@api.errtap.com/<project>' });
+init({ dsn: 'https://et_<key>@<host>/<project>' });
 
 try {
   risky();
@@ -28,17 +43,28 @@ try {
 }
 ```
 
-Get a DSN by creating a project at [app.errtap.com](https://app.errtap.com).
+Create a project at [app.errtap.com](https://app.errtap.com) and copy its DSN from **Project settings → Client keys**. The DSN is a write-only ingest key; it's safe in client bundles. Source-map uploads, release markers and Laravel queue control use a separate **upload token** (Project settings → Upload tokens), which is a secret for CI only.
+
+## Shared behaviour
+
+All SDKs follow the same rules:
+
+- **Never break the host app.** A missing or invalid DSN turns the SDK into a no-op, and send failures are swallowed.
+- **Same DSN format.** `https://et_<key>@<host>/<project>`, or a bare `et_…` key together with an explicit `endpoint`.
+- **Idempotent sends.** Every request carries an `Idempotency-Key`, so retries are stored once.
+- **Back off on `429`.** SDKs honour `Retry-After` and drop new events while paused instead of queueing them.
+- **Asynchronous ingest.** The API answers `202` once an event is queued; issues appear a moment later.
 
 ## Layout
 
-- `sdk-js/` — shared source for the browser and Node SDKs. `sdk-js-browser/index.js` and `sdk-node/index.js` are generated from it with `node sync.mjs`; edit `sdk-js/`, not the generated files.
+- `sdk-js/` is the shared source for the browser and Node SDKs. `sdk-js-browser/index.js` and `sdk-node/index.js` are generated from it with `node sync.mjs`; edit `sdk-js/`, not the generated files.
 - One folder per published package; each has its own `README.md`.
-- `sdk-dotnet-tests/` — transport tests for the .NET SDK.
+- `sdk-dotnet-tests/` holds transport tests for the .NET SDK.
+- Run the JS SDK tests with `npm run test:sdk` from the ErrTap monorepo root.
 
 ## Issues and contributions
 
-Bug reports and feature requests are welcome in [Issues](https://github.com/ErrTap/errtap-sdks/issues). This repository is published automatically from ErrTap's main codebase, where the SDKs are tested against the ingest API — so pull requests can't be merged here directly, but we read every one and port the good ones.
+Bug reports and feature requests are welcome in [Issues](https://github.com/ErrTap/errtap-sdks/issues). This repository is published automatically from ErrTap's main codebase, where the SDKs are tested against the ingest API, so pull requests can't be merged here directly. We read every one and port the good ones.
 
 Security issues: please email security@errtap.com instead of opening a public issue.
 
