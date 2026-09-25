@@ -1,6 +1,6 @@
 # @errtap/browser
 
-Browser error tracking for [ErrTap](https://www.errtap.com) — captures unhandled errors, promise rejections, and structured logs.
+Browser error tracking for [ErrTap](https://www.errtap.com) — captures unhandled errors, promise rejections, structured logs, and Core Web Vitals.
 
 ```bash
 npm i @errtap/browser
@@ -27,6 +27,17 @@ try {
 } catch (e) {
   captureException(e, { tags: { flow: 'checkout' } });
 }
+```
+
+### Web vitals
+
+`init` also measures LCP, INP, CLS, FCP and TTFB (no extra dependency) and sends them in one
+request when the page is first hidden, to your project's Performance page. The URL is sent
+without its query string or hash. Opt out or sample:
+
+```js
+init({ dsn, vitals: false });          // off
+init({ dsn, vitalsSampleRate: 0.1 });  // 10% of page views
 ```
 
 Docs: https://docs.errtap.com

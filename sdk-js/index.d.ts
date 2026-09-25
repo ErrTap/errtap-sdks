@@ -6,6 +6,13 @@ export interface ErrTapOptions {
   environment?: string;
   release?: string;
   tags?: Record<string, unknown>;
+  /**
+   * Browser only: report Core Web Vitals (LCP, CLS, INP, FCP, TTFB) once per page
+   * view, when the page is first hidden (default true)
+   */
+  vitals?: boolean;
+  /** Browser only: fraction of page views that report vitals, 0–1 (default 1) */
+  vitalsSampleRate?: number;
   /** Node only: exit the process after reporting an uncaughtException (default true) */
   exitOnFatal?: boolean;
 }

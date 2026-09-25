@@ -6,6 +6,13 @@ export interface ErrTapOptions {
   environment?: string;
   release?: string;
   tags?: Record<string, unknown>;
+  /**
+   * Report Core Web Vitals (LCP, CLS, INP, FCP, TTFB) once per page
+   * view, when the page is first hidden (default true)
+   */
+  vitals?: boolean;
+  /** Fraction of page views that report vitals, 0–1 (default 1) */
+  vitalsSampleRate?: number;
 }
 
 /** Extra fields merged into the event payload. `fingerprint` overrides server-side grouping. */

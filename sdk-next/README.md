@@ -34,6 +34,7 @@ if (process.env.NEXT_PUBLIC_ERRTAP_DSN) {
   init({
     dsn: process.env.NEXT_PUBLIC_ERRTAP_DSN,
     environment: process.env.NODE_ENV,
+    // Core Web Vitals report by default; `vitals: false` or `vitalsSampleRate: 0.1` to tune
   });
 }
 ```

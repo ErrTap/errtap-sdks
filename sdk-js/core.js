@@ -87,6 +87,7 @@ export function configure(options, contextFn = () => ({}), extraFetchOpts = {}, 
     dsn: resolved.key,
     endpoint: resolved.endpoint,
     logEndpoint: resolved.logEndpoint,
+    vitalsEndpoint: sibling(resolved.logEndpoint, '/ingest/log', '/ingest/vitals'),
   };
   context = contextFn;
   fetchOpts = extraFetchOpts;
@@ -95,6 +96,11 @@ export function configure(options, contextFn = () => ({}), extraFetchOpts = {}, 
   minuteWindows = new Map();
   pausedUntil = new Map();
   // inFlight survives re-init: those requests are still under way
+}
+
+/** `/ingest/log` → `/ingest/<route>`; undefined when a custom endpoint leaves no route to derive. */
+function sibling(url, from, to) {
+  return url.endsWith(from) ? url.slice(0, -from.length) + to : undefined;
 }
 
 /** Per-minute cap per kind: one looping error must not burn the project's rate limit and quota. */
@@ -343,6 +349,21 @@ export function captureFeedback(feedback) {
   });
   if (body === null) return Promise.resolve();
   return sendWithRetry(endpoint, transportInit(body));
+}
+
+/**
+ * One page view's web vitals in a single post matching the backend VitalsDto.
+ * @param {{ name: string, value: number }[]} vitals
+ * @param {string} [url] page URL without query or hash
+ */
+export function sendVitals(vitals, url) {
+  if (!cfg?.vitalsEndpoint || cfg.vitals === false || !vitals.length) return;
+  const body = serializePayload({
+    environment: cfg.environment,
+    vitals: vitals.slice(0, 10).map(({ name, value }) => ({ name, value, url })),
+  });
+  if (body === null) return;
+  return sendWithRetry(cfg.vitalsEndpoint, transportInit(body));
 }
 
 function sendLog(level, message, data) {
