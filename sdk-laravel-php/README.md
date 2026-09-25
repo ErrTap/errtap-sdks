@@ -58,7 +58,7 @@ Data is batched and sent from the worker loop every few seconds, never once per 
 
 ```
 ERRTAP_QUEUE_MONITOR=true        # set false to turn it off
-ERRTAP_QUEUE_SAMPLE_RATE=1.0     # share of successful jobs reported; failures and unique jobs always are
+ERRTAP_QUEUE_SAMPLE_RATE=1.0     # share of successful jobs reported; failures always are
 ERRTAP_QUEUE_SNAPSHOT_SECONDS=10
 ERRTAP_QUEUES=redis:emails,low   # extra queues to snapshot besides the ones workers serve
 ```
@@ -75,6 +75,10 @@ The command channel authenticates with an upload token, never the public DSN:
 ERRTAP_QUEUE_CONTROL=true
 ERRTAP_QUEUE_CONTROL_TOKEN=etu_…   # Project settings → Upload tokens
 ```
+
+With control on, the lock scan is sent over the upload-token channel too. The dashboard only
+offers **Release** for locks from such a scan, because anyone holding the public DSN can post
+telemetry.
 
 Pause and resume use `Queue::pause()`, which needs a Laravel version that has it. Clearing works on any driver that implements
 `ClearableQueue` (Redis, database, SQS, Beanstalkd). Only organization owners and

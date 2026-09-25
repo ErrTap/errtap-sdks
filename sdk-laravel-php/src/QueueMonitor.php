@@ -32,11 +32,15 @@ class QueueMonitor
 
     private static float $pollBackoffUntil = 0.0;
 
+    /** Lock scan waiting to go out with the next command poll. */
+    private static ?array $pendingLocks = null;
+
     /** Dashboard commands a worker may run; nothing else is ever executed. */
     private const COMMANDS = ['PAUSE', 'RESUME', 'CLEAR', 'PROMOTE', 'RELEASE_LOCK'];
 
-    // ponytail: move-to-front searches this many pending (and delayed) jobs — a job deeper in a longer backlog reports "not found"
-    private const PROMOTE_SEARCH = 10000;
+    // ponytail: move-to-front searches this many pending (and delayed) jobs inside one blocking
+    // script — a job deeper in a longer backlog reports "not found"; page it across calls if that bites
+    private const PROMOTE_SEARCH = 2000;
 
     /**
      * Moves one job, found by payload uuid, to the head of a Redis queue in one atomic
@@ -109,10 +113,11 @@ LUA;
         $on($q . 'JobProcessed', fn ($e) => self::onFinish('processed', $e->job));
         $on($q . 'JobReleasedAfterException', fn ($e) => self::onFinish('released', $e->job, $e->exception ?? null));
         $on($q . 'JobFailed', fn ($e) => self::onFinish('failed', $e->job, $e->exception ?? null));
-        // the worker kills itself right after this event, so send now
+        // the worker kills itself right after this event, so send now — events only: a
+        // snapshot could hang on the same stuck backend that caused the timeout
         $on($q . 'JobTimedOut', function ($e) {
             self::onFinish('timed_out', $e->job);
-            self::flush(true);
+            self::flush();
         });
         // must return null: a false return from a Looping listener stops the worker
         $on($q . 'Looping', function ($e) {
@@ -205,8 +210,13 @@ LUA;
             }
         }
         if (microtime(true) - self::$lastFlush >= self::FLUSH_EVERY_SECONDS) {
-            self::flush(true);
-            self::pollCommands();
+            ErrTap::untracked(function () {
+                self::flush(true);
+                // a down ErrTap already cost one timeout this tick; don't pay a second
+                if (microtime(true) >= self::$backoffUntil) {
+                    self::pollCommands();
+                }
+            });
         }
     }
 
@@ -216,24 +226,29 @@ LUA;
      */
     public static function pollCommands(): void
     {
-        $token = config('errtap.queue_control_token');
-        if (!config('errtap.queue_control', false) || !is_string($token) || $token === '') {
+        $token = self::controlToken();
+        if ($token === null) {
             return;
         }
         if (microtime(true) < self::$pollBackoffUntil) {
             return;
         }
+        $locks = self::$pendingLocks;
+        self::$pendingLocks = null;
         try {
-            if (!app('cache')->add('errtap:queue-command-poll', 1, self::POLL_EVERY_SECONDS)) {
+            // a lock scan to deliver skips the per-app poll gate (it's already once a minute)
+            if ($locks === null && !app('cache')->add('errtap:queue-command-poll', 1, self::POLL_EVERY_SECONDS)) {
                 return;
             }
         } catch (Throwable $ignored) {
             return;
         }
-        $response = ErrTap::postQueue([
+        $response = ErrTap::postQueue(array_filter([
             'host' => self::agent()['host'] ?? 'unknown',
             'canPause' => method_exists(app('queue'), 'pause'),
-        ], '/commands', $token);
+            'supports' => self::COMMANDS,
+            'locks' => $locks,
+        ], fn ($v) => $v !== null), '/commands', $token);
         if ($response === null) {
             self::$pollBackoffUntil = microtime(true) + self::BACKOFF_SECONDS;
             return;
@@ -249,6 +264,12 @@ LUA;
             }
             ErrTap::postQueue($ack, '/commands/' . rawurlencode((string) $command['id']) . '/ack', $token);
         }
+    }
+
+    private static function controlToken(): ?string
+    {
+        $token = config('errtap.queue_control_token');
+        return config('errtap.queue_control', false) && is_string($token) && $token !== '' ? $token : null;
     }
 
     /** @return array<string,mixed> what happened, shown on the dashboard */
@@ -297,7 +318,7 @@ LUA;
         if (!preg_match('/^[A-Za-z0-9-]{1,64}$/', $jobId)) {
             throw new \RuntimeException('Invalid job id.');
         }
-        $key = $q->getQueue($queue);
+        $key = self::redisKey($q, $queue);
         $moved = $q->getConnection()->eval(
             self::PROMOTE_LUA,
             3,
@@ -311,6 +332,18 @@ LUA;
             throw new \RuntimeException('That job is no longer waiting on the queue.');
         }
         return ['moved' => $moved];
+    }
+
+    /**
+     * The key Laravel really stores the queue under. On Redis Cluster, Laravel 13 wraps
+     * the name in a hash tag (a protected method); older versions use getQueue().
+     */
+    private static function redisKey(\Illuminate\Queue\RedisQueue $q, string $queue): string
+    {
+        if (method_exists($q, 'getQueueRedisKey')) {
+            return (fn () => $this->getQueueRedisKey($queue))->call($q);
+        }
+        return $q->getQueue($queue);
     }
 
     public static function releaseLock(string $key): array
@@ -344,7 +377,11 @@ LUA;
                 $payload['queues'] = $queues;
             }
             $locks = self::scanLocksIfDue();
-            if ($locks !== null) {
+            if ($locks !== null && self::controlToken() !== null) {
+                // with control on, the scan goes over the authenticated channel so the
+                // dashboard can trust it enough to release a lock (see pollCommands)
+                self::$pendingLocks = $locks;
+            } elseif ($locks !== null) {
                 $payload['locks'] = $locks;
             }
         }
@@ -438,7 +475,7 @@ LUA;
         try {
             if ($q instanceof \Illuminate\Queue\RedisQueue) {
                 $redis = $q->getConnection();
-                $key = $q->getQueue($queue);
+                $key = self::redisKey($q, $queue);
                 foreach ((array) $redis->lrange($key, 0, self::PEEK_PENDING - 1) as $raw) {
                     $jobs[] = self::describe($raw, null);
                 }
@@ -454,7 +491,7 @@ LUA;
             } elseif ($q instanceof \Illuminate\Queue\DatabaseQueue) {
                 $table = (string) config("queue.connections.$connection.table", 'jobs');
                 $rows = $q->getDatabase()->table($table)
-                    ->where('queue', $q->getQueue($queue))
+                    ->where('queue', $queue)
                     ->whereNull('reserved_at')
                     ->orderBy('id')
                     ->limit(self::PEEK_PENDING)
@@ -531,6 +568,9 @@ LUA;
                 $prefixLen = strlen((string) $res[1]);
                 for ($i = 2; $i + 1 < count($res); $i += 2) {
                     $ttl = (int) $res[$i + 1];
+                    if ($ttl === -2) {
+                        continue; // expired between SCAN and PTTL
+                    }
                     $result['keys'][] = [
                         'key' => self::UNIQUE_PREFIX . substr((string) $res[$i], $prefixLen),
                         'ttlMs' => $ttl >= 0 ? $ttl : null,
@@ -545,16 +585,20 @@ LUA;
             $prefix = $store->getPrefix() . self::UNIQUE_PREFIX;
             $table = (string) (config("cache.stores.$storeName.lock_table") ?: 'cache_locks');
             $db = method_exists($store, 'getLockConnection') ? $store->getLockConnection() : $store->getConnection();
+            // unescaped: SQLite has no default LIKE escape, so `_` matching any char is the
+            // portable choice; str_starts_with drops the few extra rows that lets through
             $rows = $db->table($table)
-                ->where('key', 'like', str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $prefix) . '%')
+                ->where('key', 'like', $prefix . '%')
                 ->where('expiration', '>', time())
                 ->limit(self::MAX_LOCKS + 1)
-                ->get(['key', 'expiration']);
+                ->get(['key', 'expiration'])
+                ->filter(fn ($row) => str_starts_with((string) $row->key, $prefix))
+                ->values();
             foreach ($rows->take(self::MAX_LOCKS) as $row) {
                 $result['keys'][] = [
                     'key' => self::UNIQUE_PREFIX . substr((string) $row->key, strlen($prefix)),
-                    // "forever" locks are stored with a far-future expiration
-                    'ttlMs' => $row->expiration - time() > 86400 * 365 * 5 ? null : ($row->expiration - time()) * 1000,
+                    // the database store has no "forever": an untimed lock expires after a day
+                    'ttlMs' => ((int) $row->expiration - time()) * 1000,
                 ];
             }
             $result['truncated'] = $rows->count() > self::MAX_LOCKS;
@@ -571,8 +615,9 @@ LUA;
             return;
         }
         self::$events[] = array_filter($event, fn ($v) => $v !== null);
-        // web requests hold everything until `terminating`; workers send in batches
-        if (count(self::$events) >= 200 && app()->runningInConsole()) {
+        // web requests hold everything until `terminating` and workers send from the loop.
+        // Only a console command outside any job flushes early: never block a job's handle().
+        if (count(self::$events) >= 200 && app()->runningInConsole() && !self::$running) {
             self::flush();
         }
     }
@@ -596,11 +641,12 @@ LUA;
         if (!is_object($command) || !$command instanceof \Illuminate\Contracts\Queue\ShouldBeUnique) {
             return null;
         }
-        if (method_exists(\Illuminate\Bus\UniqueLock::class, 'getKey')) {
+        // public static from Laravel 11; before that the key was built inline, with no ':' before the id
+        if (is_callable([\Illuminate\Bus\UniqueLock::class, 'getKey'])) {
             return \Illuminate\Bus\UniqueLock::getKey($command);
         }
         $id = method_exists($command, 'uniqueId') ? $command->uniqueId() : ($command->uniqueId ?? '');
-        return self::UNIQUE_PREFIX . get_class($command) . ':' . $id;
+        return self::UNIQUE_PREFIX . get_class($command) . $id;
     }
 
     private static function queueName($queue, $connection): string
@@ -658,6 +704,7 @@ LUA;
         self::$lastLockScan = 0.0;
         self::$backoffUntil = 0.0;
         self::$pollBackoffUntil = 0.0;
+        self::$pendingLocks = null;
     }
 
     /** @internal test hook */

@@ -26,6 +26,20 @@ class ErrTap
 
     private static bool $defer = false;
 
+    private static bool $trackQueries = true;
+
+    /** Runs the SDK's own queries (queue snapshots, lock scans) without counting them as the app's. */
+    public static function untracked(callable $fn)
+    {
+        $was = self::$trackQueries;
+        self::$trackQueries = false;
+        try {
+            return $fn();
+        } finally {
+            self::$trackQueries = $was;
+        }
+    }
+
     // bounded so an error storm in one request can't grow memory without limit
     private const OUTBOX_MAX = 50;
 
@@ -234,7 +248,7 @@ class ErrTap
      */
     public static function recordQuery(string $sql, float $timeMs, ?string $connection = null): void
     {
-        if (!self::$cfg) {
+        if (!self::$cfg || !self::$trackQueries) {
             return;
         }
         if ($timeMs >= (float) self::$cfg['slowQueryMs']) {
