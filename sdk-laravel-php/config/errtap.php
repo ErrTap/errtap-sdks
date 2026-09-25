@@ -20,4 +20,8 @@ return [
     'queue_snapshot_seconds' => (int) env('ERRTAP_QUEUE_SNAPSHOT_SECONDS', 10),
     // queues to snapshot besides the ones workers are serving: "redis:emails,default"
     'queues' => array_filter(explode(',', (string) env('ERRTAP_QUEUES', ''))),
+    // let the dashboard pause, resume and clear queues. Off unless you opt in, and it
+    // needs an upload token (Project settings → Upload tokens): the DSN is public.
+    'queue_control' => (bool) env('ERRTAP_QUEUE_CONTROL', false),
+    'queue_control_token' => env('ERRTAP_QUEUE_CONTROL_TOKEN'),
 ];

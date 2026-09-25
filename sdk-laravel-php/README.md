@@ -62,3 +62,18 @@ ERRTAP_QUEUE_SAMPLE_RATE=1.0     # share of successful jobs reported; failures a
 ERRTAP_QUEUE_SNAPSHOT_SECONDS=10
 ERRTAP_QUEUES=redis:emails,low   # extra queues to snapshot besides the ones workers serve
 ```
+
+### Queue control (opt-in)
+
+Once enabled, the Queues page can **pause**, **resume** and **clear** a queue. Workers
+check for commands every few seconds, so ErrTap never has to reach into your network.
+The command channel authenticates with an upload token, never the public DSN:
+
+```
+ERRTAP_QUEUE_CONTROL=true
+ERRTAP_QUEUE_CONTROL_TOKEN=etu_…   # Project settings → Upload tokens
+```
+
+Pause and resume use `Queue::pause()`, which needs a Laravel version that has it. Clearing works on any driver that implements
+`ClearableQueue` (Redis, database, SQS, Beanstalkd). Only organization owners and
+admins can send commands, and every command is recorded in the audit log.

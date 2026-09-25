@@ -144,25 +144,30 @@ class ErrTap
     /**
      * Queue telemetry batch (see QueueMonitor). Deferred like everything else during
      * an HTTP request; sent now from workers, where the decoded response is returned.
+     * `$path` targets the command routes, which take an upload token instead of the DSN.
      */
-    public static function postQueue(array $payload): ?array
+    public static function postQueue(array $payload, string $path = '', ?string $token = null): ?array
     {
         $cfg = self::$cfg;
         if (!$cfg || empty($cfg['queueEndpoint'])) {
             return null;
         }
-        $payload['environment'] = $cfg['environment'] ?? 'production';
+        if ($path === '') {
+            $payload['environment'] = $cfg['environment'] ?? 'production';
+        }
+        $url = $cfg['queueEndpoint'] . $path;
+        $auth = $token !== null ? 'Bearer ' . $token : null;
         $body = json_encode($payload, JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR);
         if ($body === false) {
             return null;
         }
-        if (self::$defer) {
+        if (self::$defer && $auth === null) {
             if (count(self::$outbox) < self::OUTBOX_MAX) {
-                self::$outbox[] = ['url' => $cfg['queueEndpoint'], 'body' => $body];
+                self::$outbox[] = ['url' => $url, 'body' => $body];
             }
             return null;
         }
-        $response = self::deliver($cfg['queueEndpoint'], $body, microtime(true) + self::FLUSH_BUDGET_SECONDS);
+        $response = self::deliver($url, $body, microtime(true) + self::FLUSH_BUDGET_SECONDS, $auth);
         $decoded = $response === null ? null : json_decode($response, true);
         return is_array($decoded) ? $decoded : null;
     }
@@ -309,7 +314,7 @@ class ErrTap
     }
 
     /** @return string|null the response body once delivered, null if it never was */
-    private static function deliver(string $url, string $body, float $deadline): ?string
+    private static function deliver(string $url, string $body, float $deadline, ?string $authorization = null): ?string
     {
         $cfg = self::$cfg;
         if (!$cfg) {
@@ -323,7 +328,7 @@ class ErrTap
         for ($attempt = 0; $attempt <= self::TRANSPORT_RETRIES; $attempt++) {
             $response = null;
             try {
-                $status = self::sendOnce($url, $body, $cfg['dsn'], $idempotencyKey, $response);
+                $status = self::sendOnce($url, $body, $authorization ?? 'DSN ' . $cfg['dsn'], $idempotencyKey, $response);
             } catch (Throwable $ignored) {
                 $status = 0; // never crash the host app over telemetry
             }
@@ -344,7 +349,7 @@ class ErrTap
     }
 
     /** @return int HTTP status, or 0 on a network error */
-    private static function sendOnce(string $url, string $body, string $dsn, string $idempotencyKey, &$response = null): int
+    private static function sendOnce(string $url, string $body, string $authorization, string $idempotencyKey, &$response = null): int
     {
         $ch = curl_init($url);
         if ($ch === false) {
@@ -355,7 +360,7 @@ class ErrTap
             CURLOPT_POSTFIELDS => $body,
             CURLOPT_HTTPHEADER => [
                 'Content-Type: application/json',
-                'Authorization: DSN ' . $dsn,
+                'Authorization: ' . $authorization,
                 'Idempotency-Key: ' . $idempotencyKey,
             ],
             CURLOPT_RETURNTRANSFER => true,

@@ -30,6 +30,14 @@ class QueueMonitor
     // after a failed send, stop trying for a while so a down ErrTap can't stall workers
     private static float $backoffUntil = 0.0;
 
+    private static float $pollBackoffUntil = 0.0;
+
+    /** Dashboard commands a worker may run; nothing else is ever executed. */
+    private const COMMANDS = ['PAUSE', 'RESUME', 'CLEAR'];
+
+    // one command poll per app every few seconds, however many workers run
+    private const POLL_EVERY_SECONDS = 3;
+
     private const MAX_EVENTS = 500;
 
     private const FLUSH_EVERY_SECONDS = 5.0;
@@ -164,7 +172,81 @@ class QueueMonitor
         }
         if (microtime(true) - self::$lastFlush >= self::FLUSH_EVERY_SECONDS) {
             self::flush(true);
+            self::pollCommands();
         }
+    }
+
+    /**
+     * Queue control (ERRTAP_QUEUE_CONTROL): claim the dashboard's pending commands,
+     * run them, and report back. Only the COMMANDS allowlist can ever run.
+     */
+    public static function pollCommands(): void
+    {
+        $token = config('errtap.queue_control_token');
+        if (!config('errtap.queue_control', false) || !is_string($token) || $token === '') {
+            return;
+        }
+        if (microtime(true) < self::$pollBackoffUntil) {
+            return;
+        }
+        try {
+            if (!app('cache')->add('errtap:queue-command-poll', 1, self::POLL_EVERY_SECONDS)) {
+                return;
+            }
+        } catch (Throwable $ignored) {
+            return;
+        }
+        $response = ErrTap::postQueue([
+            'host' => self::agent()['host'] ?? 'unknown',
+            'canPause' => method_exists(app('queue'), 'pause'),
+        ], '/commands', $token);
+        if ($response === null) {
+            self::$pollBackoffUntil = microtime(true) + self::BACKOFF_SECONDS;
+            return;
+        }
+        foreach ((array) ($response['commands'] ?? []) as $command) {
+            if (!is_array($command) || !isset($command['id'])) {
+                continue;
+            }
+            try {
+                $ack = ['ok' => true, 'result' => self::execute($command)];
+            } catch (Throwable $e) {
+                $ack = ['ok' => false, 'error' => mb_substr($e->getMessage(), 0, 1000)];
+            }
+            ErrTap::postQueue($ack, '/commands/' . rawurlencode((string) $command['id']) . '/ack', $token);
+        }
+    }
+
+    /** @return array<string,mixed> what happened, shown on the dashboard */
+    public static function execute(array $command): array
+    {
+        $type = (string) ($command['type'] ?? '');
+        $connection = (string) ($command['connection'] ?? '');
+        $queue = (string) ($command['queue'] ?? '');
+        if (!in_array($type, self::COMMANDS, true)) {
+            throw new \RuntimeException("Unsupported command: $type");
+        }
+        if ($queue === '' || !is_array(config("queue.connections.$connection"))) {
+            throw new \RuntimeException("Unknown queue connection: $connection");
+        }
+        $manager = app('queue');
+        switch ($type) {
+            case 'PAUSE':
+            case 'RESUME':
+                $method = $type === 'PAUSE' ? 'pause' : 'resume';
+                if (!method_exists($manager, $method)) {
+                    throw new \RuntimeException('This Laravel version cannot pause queues (needs Queue::pause).');
+                }
+                $manager->$method($connection, $queue);
+                return ['paused' => $type === 'PAUSE'];
+            case 'CLEAR':
+                $q = $manager->connection($connection);
+                if (!$q instanceof \Illuminate\Contracts\Queue\ClearableQueue) {
+                    throw new \RuntimeException('The ' . self::driver($q) . ' driver cannot be cleared.');
+                }
+                return ['cleared' => (int) $q->clear($queue)];
+        }
+        return [];
     }
 
     /** Send buffered events, plus a snapshot of every queue whose turn it is. */
@@ -258,6 +340,10 @@ class QueueMonitor
             if (method_exists($q, $method)) {
                 $snap[$field] = (int) $q->$method($queue);
             }
+        }
+        $manager = app('queue');
+        if (method_exists($manager, 'isPaused')) {
+            $snap['paused'] = (bool) $manager->isPaused($connection, $queue);
         }
         if (method_exists($q, 'creationTimeOfOldestPendingJob')) {
             $oldest = $q->creationTimeOfOldestPendingJob($queue);
@@ -493,6 +579,7 @@ class QueueMonitor
         self::$lastFlush = 0.0;
         self::$lastLockScan = 0.0;
         self::$backoffUntil = 0.0;
+        self::$pollBackoffUntil = 0.0;
     }
 
     /** @internal test hook */
