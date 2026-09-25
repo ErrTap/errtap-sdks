@@ -33,7 +33,41 @@ class QueueMonitor
     private static float $pollBackoffUntil = 0.0;
 
     /** Dashboard commands a worker may run; nothing else is ever executed. */
-    private const COMMANDS = ['PAUSE', 'RESUME', 'CLEAR'];
+    private const COMMANDS = ['PAUSE', 'RESUME', 'CLEAR', 'PROMOTE', 'RELEASE_LOCK'];
+
+    // ponytail: move-to-front searches this many pending (and delayed) jobs — a job deeper in a longer backlog reports "not found"
+    private const PROMOTE_SEARCH = 10000;
+
+    /**
+     * Moves one job, found by payload uuid, to the head of a Redis queue in one atomic
+     * step. Laravel pushes with RPUSH and pops with LPOP, so LPUSH is "next". A delayed
+     * job leaves the delayed set and gets the notify token every push leaves.
+     * KEYS: queue, queue:delayed, queue:notify. ARGV: needle, search limit.
+     */
+    private const PROMOTE_LUA = <<<'LUA'
+local needle, limit = ARGV[1], tonumber(ARGV[2])
+local n = math.min(redis.call('llen', KEYS[1]), limit)
+for start = 0, n - 1, 500 do
+  local jobs = redis.call('lrange', KEYS[1], start, math.min(start + 500, n) - 1)
+  for i, job in ipairs(jobs) do
+    if string.find(job, needle, 1, true) then
+      if start + i == 1 then return 'front' end
+      redis.call('lrem', KEYS[1], 1, job)
+      redis.call('lpush', KEYS[1], job)
+      return 'pending'
+    end
+  end
+end
+for _, job in ipairs(redis.call('zrange', KEYS[2], 0, limit - 1)) do
+  if string.find(job, needle, 1, true) then
+    redis.call('zrem', KEYS[2], job)
+    redis.call('lpush', KEYS[1], job)
+    redis.call('rpush', KEYS[3], 1)
+    return 'delayed'
+  end
+end
+return 0
+LUA;
 
     // one command poll per app every few seconds, however many workers run
     private const POLL_EVERY_SECONDS = 3;
@@ -226,6 +260,10 @@ class QueueMonitor
         if (!in_array($type, self::COMMANDS, true)) {
             throw new \RuntimeException("Unsupported command: $type");
         }
+        $target = (string) ($command['target'] ?? '');
+        if ($type === 'RELEASE_LOCK') {
+            return self::releaseLock($target);
+        }
         if ($queue === '' || !is_array(config("queue.connections.$connection"))) {
             throw new \RuntimeException("Unknown queue connection: $connection");
         }
@@ -245,8 +283,48 @@ class QueueMonitor
                     throw new \RuntimeException('The ' . self::driver($q) . ' driver cannot be cleared.');
                 }
                 return ['cleared' => (int) $q->clear($queue)];
+            case 'PROMOTE':
+                return self::promote($manager->connection($connection), $queue, $target);
         }
         return [];
+    }
+
+    public static function promote($q, string $queue, string $jobId): array
+    {
+        if (!$q instanceof \Illuminate\Queue\RedisQueue) {
+            throw new \RuntimeException('Only Redis queues can move a job to the front.');
+        }
+        if (!preg_match('/^[A-Za-z0-9-]{1,64}$/', $jobId)) {
+            throw new \RuntimeException('Invalid job id.');
+        }
+        $key = $q->getQueue($queue);
+        $moved = $q->getConnection()->eval(
+            self::PROMOTE_LUA,
+            3,
+            $key,
+            $key . ':delayed',
+            $key . ':notify',
+            '"uuid":"' . $jobId . '"',
+            self::PROMOTE_SEARCH,
+        );
+        if (!is_string($moved)) {
+            throw new \RuntimeException('That job is no longer waiting on the queue.');
+        }
+        return ['moved' => $moved];
+    }
+
+    public static function releaseLock(string $key): array
+    {
+        // only unique-job locks — never an arbitrary cache key
+        if (!str_starts_with($key, self::UNIQUE_PREFIX) || strlen($key) > 500) {
+            throw new \RuntimeException('Not a unique-job lock.');
+        }
+        $store = app('cache')->store();
+        if (!$store->getStore() instanceof \Illuminate\Contracts\Cache\LockProvider) {
+            throw new \RuntimeException('The cache store does not support locks.');
+        }
+        $store->lock($key)->forceRelease();
+        return ['released' => true];
     }
 
     /** Send buffered events, plus a snapshot of every queue whose turn it is. */

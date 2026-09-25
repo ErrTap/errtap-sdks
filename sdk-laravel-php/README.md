@@ -65,7 +65,9 @@ ERRTAP_QUEUES=redis:emails,low   # extra queues to snapshot besides the ones wor
 
 ### Queue control (opt-in)
 
-Once enabled, the Queues page can **pause**, **resume** and **clear** a queue. Workers
+Once enabled, the Queues page can **pause**, **resume** and **clear** a queue, **move a
+waiting job to the front** (Redis driver; delayed jobs can be run next), and **release a
+unique-job lock** that nothing is holding any more. Workers
 check for commands every few seconds, so ErrTap never has to reach into your network.
 The command channel authenticates with an upload token, never the public DSN:
 
