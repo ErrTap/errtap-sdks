@@ -45,3 +45,20 @@ Manual capture anywhere:
 ```php
 ErrTap\ErrTap::captureMessage('something noteworthy');
 ```
+
+## Queue monitoring
+
+Queue workers report to the project's **Queues** page with no extra setup. It shows:
+
+- each job's lifecycle (queued → started → released/processed/failed/timed out) with its wait time, duration, CPU time and peak memory. Peak memory needs PHP 8.2+.
+- the depth of each queue a worker serves (pending, delayed, running, oldest wait) and the first jobs in line. Line-up is shown for the Redis and database drivers.
+- a scan of held `ShouldBeUnique` locks (Redis and database cache stores), with locks that no queued or running job explains flagged as stuck.
+
+Data is batched and sent from the worker loop every few seconds, never once per job.
+
+```
+ERRTAP_QUEUE_MONITOR=true        # set false to turn it off
+ERRTAP_QUEUE_SAMPLE_RATE=1.0     # share of successful jobs reported; failures and unique jobs always are
+ERRTAP_QUEUE_SNAPSHOT_SECONDS=10
+ERRTAP_QUEUES=redis:emails,low   # extra queues to snapshot besides the ones workers serve
+```

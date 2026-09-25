@@ -126,7 +126,45 @@ class ErrTap
             'dsn' => $resolved['key'],
             'endpoint' => $resolved['endpoint'],
             'logEndpoint' => $resolved['logEndpoint'],
+            'queueEndpoint' => preg_replace('#/ingest/log$#', '/ingest/queue', $resolved['logEndpoint']),
         ]);
+    }
+
+    public static function enabled(): bool
+    {
+        return self::$cfg !== null;
+    }
+
+    /** @return mixed a config value from init(), e.g. 'environment' */
+    public static function option(string $key, $default = null)
+    {
+        return self::$cfg[$key] ?? $default;
+    }
+
+    /**
+     * Queue telemetry batch (see QueueMonitor). Deferred like everything else during
+     * an HTTP request; sent now from workers, where the decoded response is returned.
+     */
+    public static function postQueue(array $payload): ?array
+    {
+        $cfg = self::$cfg;
+        if (!$cfg || empty($cfg['queueEndpoint'])) {
+            return null;
+        }
+        $payload['environment'] = $cfg['environment'] ?? 'production';
+        $body = json_encode($payload, JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR);
+        if ($body === false) {
+            return null;
+        }
+        if (self::$defer) {
+            if (count(self::$outbox) < self::OUTBOX_MAX) {
+                self::$outbox[] = ['url' => $cfg['queueEndpoint'], 'body' => $body];
+            }
+            return null;
+        }
+        $response = self::deliver($cfg['queueEndpoint'], $body, microtime(true) + self::FLUSH_BUDGET_SECONDS);
+        $decoded = $response === null ? null : json_decode($response, true);
+        return is_array($decoded) ? $decoded : null;
     }
 
     /**
@@ -270,11 +308,12 @@ class ErrTap
         self::deliver($url, $body, microtime(true) + self::FLUSH_BUDGET_SECONDS);
     }
 
-    private static function deliver(string $url, string $body, float $deadline): void
+    /** @return string|null the response body once delivered, null if it never was */
+    private static function deliver(string $url, string $body, float $deadline): ?string
     {
         $cfg = self::$cfg;
         if (!$cfg) {
-            return;
+            return null;
         }
         try {
             $idempotencyKey = bin2hex(random_bytes(16));
@@ -282,25 +321,30 @@ class ErrTap
             $idempotencyKey = uniqid('', true);
         }
         for ($attempt = 0; $attempt <= self::TRANSPORT_RETRIES; $attempt++) {
+            $response = null;
             try {
-                $status = self::sendOnce($url, $body, $cfg['dsn'], $idempotencyKey);
+                $status = self::sendOnce($url, $body, $cfg['dsn'], $idempotencyKey, $response);
             } catch (Throwable $ignored) {
                 $status = 0; // never crash the host app over telemetry
             }
+            if ($status >= 200 && $status < 300) {
+                return is_string($response) ? $response : '';
+            }
             $retryable = $status === 0 || $status === 408 || $status >= 500;
-            if (($status >= 200 && $status < 300) || !$retryable) {
-                return;
+            if (!$retryable) {
+                return null;
             }
             $backoff = 0.2 * ($attempt + 1);
             if ($attempt >= self::TRANSPORT_RETRIES || microtime(true) + $backoff >= $deadline) {
-                return;
+                return null;
             }
             usleep((int) ($backoff * 1_000_000));
         }
+        return null;
     }
 
     /** @return int HTTP status, or 0 on a network error */
-    private static function sendOnce(string $url, string $body, string $dsn, string $idempotencyKey): int
+    private static function sendOnce(string $url, string $body, string $dsn, string $idempotencyKey, &$response = null): int
     {
         $ch = curl_init($url);
         if ($ch === false) {
@@ -318,7 +362,7 @@ class ErrTap
             CURLOPT_CONNECTTIMEOUT => self::CONNECT_TIMEOUT_SECONDS,
             CURLOPT_TIMEOUT => self::REQUEST_TIMEOUT_SECONDS,
         ]);
-        curl_exec($ch);
+        $response = curl_exec($ch);
         $status = curl_errno($ch) !== 0 ? 0 : (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
         return $status;

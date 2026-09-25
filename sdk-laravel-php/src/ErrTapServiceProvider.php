@@ -67,6 +67,13 @@ class ErrTapServiceProvider extends ServiceProvider
             }
         }
 
+        // Queue diagnostics: job lifecycle, per-job CPU/memory, depth snapshots, unique locks
+        if (config('errtap.queue_monitor', true)) {
+            QueueMonitor::register($this->app);
+            // queued-job events from a request ride out with the request's other events
+            $this->app->terminating(fn () => QueueMonitor::flush());
+        }
+
         // HTTP: hold events until the response is out. Console/queue workers have no
         // user waiting and may run for days, so they send immediately. Registered after
         // flushQueryStats (terminating callbacks run in order) so N+1 reports ride along.
@@ -75,6 +82,9 @@ class ErrTapServiceProvider extends ServiceProvider
             $this->app->terminating(fn () => ErrTap::flush());
             // backstop for fatals that end the request before `terminating` runs
             register_shutdown_function(fn () => ErrTap::flush());
+        } elseif (config('errtap.queue_monitor', true)) {
+            // a worker that dies mid-job (fatal, OOM) still reports what it buffered
+            register_shutdown_function(fn () => QueueMonitor::flush());
         }
     }
 }

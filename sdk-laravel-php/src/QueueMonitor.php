@@ -1,0 +1,503 @@
+<?php
+
+namespace ErrTap;
+
+use Throwable;
+
+/**
+ * Queue diagnostics: job lifecycle events with per-job CPU/memory, periodic queue
+ * depth snapshots and a scan of unique-job locks. Everything is batched and sent to
+ * /ingest/queue from the worker loop (Looping event), never per job.
+ *
+ * Wired by ErrTapServiceProvider when ERRTAP_QUEUE_MONITOR is on. Every hook swallows
+ * its own errors — diagnostics must never fail a job.
+ */
+class QueueMonitor
+{
+    /** @var list<array> lifecycle events waiting to be sent */
+    private static array $events = [];
+
+    /** @var array<string,array{wall:float,cpu:float}> jobId => start marks */
+    private static array $running = [];
+
+    /** @var array<string,true> "connection|queue" pairs this process has worked */
+    private static array $seen = [];
+
+    private static float $lastFlush = 0.0;
+
+    private static float $lastLockScan = 0.0;
+
+    // after a failed send, stop trying for a while so a down ErrTap can't stall workers
+    private static float $backoffUntil = 0.0;
+
+    private const MAX_EVENTS = 500;
+
+    private const FLUSH_EVERY_SECONDS = 5.0;
+
+    private const BACKOFF_SECONDS = 60.0;
+
+    private const PEEK_PENDING = 50;
+
+    private const PEEK_DELAYED = 20;
+
+    private const MAX_LOCKS = 500;
+
+    // ponytail: SCAN pages per lock scan (1000 keys each) — a cache over 50k keys gets a partial scan
+    private const LOCK_SCAN_PAGES = 50;
+
+    private const UNIQUE_PREFIX = 'laravel_unique_job:';
+
+    /** @param \Illuminate\Contracts\Foundation\Application $app */
+    public static function register($app): void
+    {
+        $events = $app['events'];
+        $on = function (string $class, callable $fn) use ($events) {
+            if (class_exists($class)) {
+                $events->listen($class, function ($event) use ($fn) {
+                    try {
+                        $fn($event);
+                    } catch (Throwable $ignored) {
+                    }
+                });
+            }
+        };
+        $q = 'Illuminate\\Queue\\Events\\';
+        $on($q . 'JobQueued', fn ($e) => self::onQueued($e));
+        $on($q . 'JobProcessing', fn ($e) => self::onStart($e->job));
+        $on($q . 'JobProcessed', fn ($e) => self::onFinish('processed', $e->job));
+        $on($q . 'JobReleasedAfterException', fn ($e) => self::onFinish('released', $e->job, $e->exception ?? null));
+        $on($q . 'JobFailed', fn ($e) => self::onFinish('failed', $e->job, $e->exception ?? null));
+        // the worker kills itself right after this event, so send now
+        $on($q . 'JobTimedOut', function ($e) {
+            self::onFinish('timed_out', $e->job);
+            self::flush(true);
+        });
+        // must return null: a false return from a Looping listener stops the worker
+        $on($q . 'Looping', function ($e) {
+            self::tick((string) $e->connectionName, (string) $e->queue);
+        });
+        $on($q . 'WorkerStopping', fn () => self::flush(true));
+    }
+
+    public static function onQueued($event): void
+    {
+        if (!isset($event->payload) || !is_string($event->payload)) {
+            return; // Laravel < 10.x: no payload on JobQueued, so nothing to correlate by
+        }
+        $payload = json_decode($event->payload, true);
+        $jobId = is_array($payload) ? ($payload['uuid'] ?? null) : null;
+        if (!$jobId) {
+            return;
+        }
+        $uniqueKey = self::uniqueKey($event->job ?? null);
+        if (!$uniqueKey && !self::sampled($jobId)) {
+            return;
+        }
+        self::record([
+            'type' => 'queued',
+            'jobId' => $jobId,
+            'name' => $payload['displayName'] ?? 'unknown',
+            'connection' => (string) $event->connectionName,
+            'queue' => self::queueName($event->queue ?? null, $event->connectionName),
+            'attempt' => 0,
+            'at' => microtime(true),
+            'delaySeconds' => is_numeric($event->delay ?? null) ? (int) $event->delay : null,
+            'uniqueKey' => $uniqueKey,
+        ]);
+    }
+
+    /** @param \Illuminate\Contracts\Queue\Job $job */
+    public static function onStart($job): void
+    {
+        $jobId = $job->uuid();
+        if (!$jobId) {
+            return;
+        }
+        self::$seen[$job->getConnectionName() . '|' . $job->getQueue()] = true;
+        if (function_exists('memory_reset_peak_usage')) {
+            memory_reset_peak_usage();
+        }
+        self::$running[$jobId] = ['wall' => microtime(true), 'cpu' => self::cpuSeconds()];
+        if (self::sampled($jobId)) {
+            self::record(self::base('processing', $job));
+        }
+    }
+
+    /** @param \Illuminate\Contracts\Queue\Job $job */
+    public static function onFinish(string $type, $job, ?Throwable $e = null): void
+    {
+        $jobId = $job->uuid();
+        if (!$jobId) {
+            return;
+        }
+        $start = self::$running[$jobId] ?? null;
+        // a job that fails before it starts (max attempts) has no start marks
+        if ($type !== 'failed' || $start) {
+            unset(self::$running[$jobId]);
+        }
+        if (($type === 'processed' || $type === 'released') && !self::sampled($jobId)) {
+            return;
+        }
+        $event = self::base($type, $job);
+        if ($start) {
+            $event['durationMs'] = round((microtime(true) - $start['wall']) * 1000, 2);
+            $event['cpuMs'] = round((self::cpuSeconds() - $start['cpu']) * 1000, 2);
+            // PHP < 8.2 can't reset the peak, so it would be the process peak, not the job's
+            if (function_exists('memory_reset_peak_usage')) {
+                $event['memoryBytes'] = memory_get_peak_usage();
+            }
+        }
+        if ($e) {
+            $event['exception'] = get_class($e);
+            $event['error'] = mb_substr($e->getMessage(), 0, 1000);
+        }
+        self::record($event);
+    }
+
+    /** Worker loop hook: flush on a timer and snapshot the queues this worker serves. */
+    public static function tick(string $connection, string $queues): void
+    {
+        foreach (explode(',', $queues) as $queue) {
+            if ($queue !== '') {
+                self::$seen[$connection . '|' . $queue] = true;
+            }
+        }
+        if (microtime(true) - self::$lastFlush >= self::FLUSH_EVERY_SECONDS) {
+            self::flush(true);
+        }
+    }
+
+    /** Send buffered events, plus a snapshot of every queue whose turn it is. */
+    public static function flush(bool $withSnapshot = false): void
+    {
+        self::$lastFlush = microtime(true);
+        if (microtime(true) < self::$backoffUntil) {
+            return;
+        }
+        $payload = [];
+        if (self::$events) {
+            $payload['events'] = self::$events;
+        }
+        if ($withSnapshot) {
+            $queues = self::snapshotQueues();
+            if ($queues) {
+                $payload['queues'] = $queues;
+            }
+            $locks = self::scanLocksIfDue();
+            if ($locks !== null) {
+                $payload['locks'] = $locks;
+            }
+        }
+        if (!$payload) {
+            return;
+        }
+        $payload['agent'] = self::agent();
+        self::$events = [];
+        $deferred = !app()->runningInConsole();
+        $response = ErrTap::postQueue($payload);
+        if ($response === null && !$deferred) {
+            self::$backoffUntil = microtime(true) + self::BACKOFF_SECONDS;
+        }
+    }
+
+    /** @return list<array> queue snapshots this process won the turn for */
+    private static function snapshotQueues(): array
+    {
+        $out = [];
+        $interval = max(5, (int) config('errtap.queue_snapshot_seconds', 10));
+        foreach (self::queueTargets() as [$connection, $queue]) {
+            try {
+                // one worker per queue per interval, however many are running
+                if (!app('cache')->add("errtap:queue-snapshot:$connection:$queue", 1, $interval)) {
+                    continue;
+                }
+                $snap = self::snapshot($connection, $queue);
+                if ($snap) {
+                    $out[] = $snap;
+                }
+            } catch (Throwable $ignored) {
+            }
+        }
+        return $out;
+    }
+
+    /** @return list<array{0:string,1:string}> */
+    private static function queueTargets(): array
+    {
+        $targets = self::$seen;
+        foreach ((array) config('errtap.queues', []) as $entry) {
+            $entry = trim((string) $entry);
+            if ($entry === '') {
+                continue;
+            }
+            [$connection, $queue] = str_contains($entry, ':')
+                ? explode(':', $entry, 2)
+                : [(string) config('queue.default'), $entry];
+            $targets[$connection . '|' . $queue] = true;
+        }
+        $pairs = [];
+        foreach (array_keys($targets) as $key) {
+            [$connection, $queue] = explode('|', $key, 2);
+            if ($connection !== 'sync' && $connection !== 'null') {
+                $pairs[] = [$connection, $queue];
+            }
+        }
+        return $pairs;
+    }
+
+    public static function snapshot(string $connection, string $queue): ?array
+    {
+        $q = app('queue')->connection($connection);
+        $snap = [
+            'connection' => $connection,
+            'queue' => $queue,
+            'driver' => self::driver($q),
+            'size' => (int) $q->size($queue),
+        ];
+        foreach (['pending' => 'pendingSize', 'delayed' => 'delayedSize', 'reserved' => 'reservedSize'] as $field => $method) {
+            if (method_exists($q, $method)) {
+                $snap[$field] = (int) $q->$method($queue);
+            }
+        }
+        if (method_exists($q, 'creationTimeOfOldestPendingJob')) {
+            $oldest = $q->creationTimeOfOldestPendingJob($queue);
+            $snap['oldestAt'] = is_numeric($oldest) ? (int) $oldest : null;
+        }
+        $snap['jobs'] = self::peek($q, $connection, $queue);
+        return $snap;
+    }
+
+    /** First jobs in line, read without reserving them. */
+    private static function peek($q, string $connection, string $queue): array
+    {
+        $jobs = [];
+        try {
+            if ($q instanceof \Illuminate\Queue\RedisQueue) {
+                $redis = $q->getConnection();
+                $key = $q->getQueue($queue);
+                foreach ((array) $redis->lrange($key, 0, self::PEEK_PENDING - 1) as $raw) {
+                    $jobs[] = self::describe($raw, null);
+                }
+                $delayed = $redis->eval(
+                    "return redis.call('zrange', KEYS[1], 0, ARGV[1], 'WITHSCORES')",
+                    1,
+                    $key . ':delayed',
+                    self::PEEK_DELAYED - 1,
+                );
+                for ($i = 0; $i + 1 < count((array) $delayed); $i += 2) {
+                    $jobs[] = self::describe($delayed[$i], (int) $delayed[$i + 1]);
+                }
+            } elseif ($q instanceof \Illuminate\Queue\DatabaseQueue) {
+                $table = (string) config("queue.connections.$connection.table", 'jobs');
+                $rows = $q->getDatabase()->table($table)
+                    ->where('queue', $q->getQueue($queue))
+                    ->whereNull('reserved_at')
+                    ->orderBy('id')
+                    ->limit(self::PEEK_PENDING)
+                    ->get(['payload', 'available_at']);
+                $now = time();
+                foreach ($rows as $row) {
+                    $at = (int) $row->available_at;
+                    $jobs[] = self::describe($row->payload, $at > $now ? $at : null);
+                }
+            }
+        } catch (Throwable $ignored) {
+        }
+        return array_values(array_filter($jobs));
+    }
+
+    private static function describe($raw, ?int $availableAt): ?array
+    {
+        $p = is_string($raw) ? json_decode($raw, true) : null;
+        if (!is_array($p) || empty($p['uuid'])) {
+            return null;
+        }
+        return [
+            'id' => $p['uuid'],
+            'name' => $p['displayName'] ?? 'unknown',
+            'attempts' => (int) ($p['attempts'] ?? 0),
+            'createdAt' => isset($p['createdAt']) ? (int) $p['createdAt'] : null,
+            'availableAt' => $availableAt,
+        ];
+    }
+
+    /**
+     * Unique-job locks currently held in the default cache store, at most once a
+     * minute across all workers. Null when it isn't this process's turn.
+     *
+     * @return array{store:string,supported:bool,keys:list<array{key:string,ttlMs:int|null}>,truncated:bool}|null
+     */
+    private static function scanLocksIfDue(): ?array
+    {
+        if (microtime(true) - self::$lastLockScan < 60) {
+            return null;
+        }
+        self::$lastLockScan = microtime(true);
+        try {
+            if (!app('cache')->add('errtap:queue-lock-scan', 1, 60)) {
+                return null;
+            }
+            return self::scanLocks();
+        } catch (Throwable $ignored) {
+            return null;
+        }
+    }
+
+    public static function scanLocks(): array
+    {
+        $storeName = (string) config('cache.default');
+        $store = app('cache')->store($storeName)->getStore();
+        $result = ['store' => $storeName, 'supported' => true, 'keys' => [], 'truncated' => false];
+        if ($store instanceof \Illuminate\Cache\RedisStore) {
+            $redis = $store->lockConnection();
+            $cursor = '0';
+            for ($page = 0; $page < self::LOCK_SCAN_PAGES; $page++) {
+                // KEYS[1] gets the client's prefix applied; SCAN's pattern doesn't, so
+                // the script builds the pattern from the prefixed key and returns it.
+                $res = $redis->eval(
+                    "local r = redis.call('scan', ARGV[1], 'match', KEYS[1] .. '*', 'count', 1000)\n"
+                    . "local out = {r[1], KEYS[1]}\n"
+                    . "for _, k in ipairs(r[2]) do table.insert(out, k); table.insert(out, redis.call('pttl', k)) end\n"
+                    . 'return out',
+                    1,
+                    $store->getPrefix() . self::UNIQUE_PREFIX,
+                    $cursor,
+                );
+                $cursor = (string) $res[0];
+                $prefixLen = strlen((string) $res[1]);
+                for ($i = 2; $i + 1 < count($res); $i += 2) {
+                    $ttl = (int) $res[$i + 1];
+                    $result['keys'][] = [
+                        'key' => self::UNIQUE_PREFIX . substr((string) $res[$i], $prefixLen),
+                        'ttlMs' => $ttl >= 0 ? $ttl : null,
+                    ];
+                }
+                if ($cursor === '0' || count($result['keys']) >= self::MAX_LOCKS) {
+                    break;
+                }
+            }
+            $result['truncated'] = $cursor !== '0';
+        } elseif ($store instanceof \Illuminate\Cache\DatabaseStore) {
+            $prefix = $store->getPrefix() . self::UNIQUE_PREFIX;
+            $table = (string) (config("cache.stores.$storeName.lock_table") ?: 'cache_locks');
+            $db = method_exists($store, 'getLockConnection') ? $store->getLockConnection() : $store->getConnection();
+            $rows = $db->table($table)
+                ->where('key', 'like', str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $prefix) . '%')
+                ->where('expiration', '>', time())
+                ->limit(self::MAX_LOCKS + 1)
+                ->get(['key', 'expiration']);
+            foreach ($rows->take(self::MAX_LOCKS) as $row) {
+                $result['keys'][] = [
+                    'key' => self::UNIQUE_PREFIX . substr((string) $row->key, strlen($prefix)),
+                    // "forever" locks are stored with a far-future expiration
+                    'ttlMs' => $row->expiration - time() > 86400 * 365 * 5 ? null : ($row->expiration - time()) * 1000,
+                ];
+            }
+            $result['truncated'] = $rows->count() > self::MAX_LOCKS;
+        } else {
+            $result['supported'] = false;
+        }
+        $result['keys'] = array_slice($result['keys'], 0, self::MAX_LOCKS);
+        return $result;
+    }
+
+    private static function record(array $event): void
+    {
+        if (count(self::$events) >= self::MAX_EVENTS) {
+            return;
+        }
+        self::$events[] = array_filter($event, fn ($v) => $v !== null);
+        // web requests hold everything until `terminating`; workers send in batches
+        if (count(self::$events) >= 200 && app()->runningInConsole()) {
+            self::flush();
+        }
+    }
+
+    /** @param \Illuminate\Contracts\Queue\Job $job */
+    private static function base(string $type, $job): array
+    {
+        return [
+            'type' => $type,
+            'jobId' => $job->uuid(),
+            'name' => $job->resolveName(),
+            'connection' => (string) $job->getConnectionName(),
+            'queue' => (string) $job->getQueue(),
+            'attempt' => (int) $job->attempts(),
+            'at' => microtime(true),
+        ];
+    }
+
+    private static function uniqueKey($command): ?string
+    {
+        if (!is_object($command) || !$command instanceof \Illuminate\Contracts\Queue\ShouldBeUnique) {
+            return null;
+        }
+        if (method_exists(\Illuminate\Bus\UniqueLock::class, 'getKey')) {
+            return \Illuminate\Bus\UniqueLock::getKey($command);
+        }
+        $id = method_exists($command, 'uniqueId') ? $command->uniqueId() : ($command->uniqueId ?? '');
+        return self::UNIQUE_PREFIX . get_class($command) . ':' . $id;
+    }
+
+    private static function queueName($queue, $connection): string
+    {
+        if (is_string($queue) && $queue !== '') {
+            return $queue;
+        }
+        return (string) config("queue.connections.$connection.queue", 'default');
+    }
+
+    private static function driver($q): string
+    {
+        return match (true) {
+            $q instanceof \Illuminate\Queue\RedisQueue => 'redis',
+            $q instanceof \Illuminate\Queue\DatabaseQueue => 'database',
+            $q instanceof \Illuminate\Queue\SqsQueue => 'sqs',
+            $q instanceof \Illuminate\Queue\BeanstalkdQueue => 'beanstalkd',
+            default => strtolower((new \ReflectionClass($q))->getShortName()),
+        };
+    }
+
+    private static function agent(): array
+    {
+        return [
+            'host' => gethostname() ?: null,
+            'php' => PHP_VERSION,
+            'laravel' => app()->version(),
+        ];
+    }
+
+    /** Deterministic per job, so every event of a sampled job is kept together. */
+    private static function sampled(string $jobId): bool
+    {
+        $rate = (float) config('errtap.queue_sample_rate', 1.0);
+        return $rate >= 1.0 || (crc32($jobId) % 10000) < $rate * 10000;
+    }
+
+    private static function cpuSeconds(): float
+    {
+        $u = function_exists('getrusage') ? getrusage() : null;
+        if (!$u) {
+            return 0.0;
+        }
+        return $u['ru_utime.tv_sec'] + $u['ru_utime.tv_usec'] / 1e6
+            + $u['ru_stime.tv_sec'] + $u['ru_stime.tv_usec'] / 1e6;
+    }
+
+    /** @internal test hook */
+    public static function reset(): void
+    {
+        self::$events = [];
+        self::$running = [];
+        self::$seen = [];
+        self::$lastFlush = 0.0;
+        self::$lastLockScan = 0.0;
+        self::$backoffUntil = 0.0;
+    }
+
+    /** @internal test hook */
+    public static function pending(): array
+    {
+        return self::$events;
+    }
+}
