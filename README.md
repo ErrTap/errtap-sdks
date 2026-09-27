@@ -5,7 +5,7 @@ Official SDKs for [ErrTap](https://www.errtap.com): error tracking, logs, Web Vi
 | Package | Platform | Version | Install | Docs |
 | --- | --- | --- | --- | --- |
 | [`@errtap/browser`](./sdk-js-browser) | Browser, any JS framework | 0.5.0 | `npm i @errtap/browser` | [Browser](https://docs.errtap.com/platforms/browser) |
-| [`@errtap/node`](./sdk-node) | Node.js 18+ | 0.4.1 | `npm i @errtap/node` | [Node.js](https://docs.errtap.com/platforms/nodejs) |
+| [`@errtap/node`](./sdk-node) | Node.js 18+ (ESM); 20.19+ or 22.12+ from CommonJS | 0.4.1 | `npm i @errtap/node` | [Node.js](https://docs.errtap.com/platforms/nodejs) |
 | [`@errtap/next`](./sdk-next) | Next.js 13+ (App Router) | 0.5.2 | `npm i @errtap/next` | [Next.js](https://docs.errtap.com/platforms/nextjs) |
 | [`@errtap/nestjs`](./sdk-nestjs) | NestJS 10+ | 0.4.1 | `npm i @errtap/nestjs` | [NestJS](https://docs.errtap.com/platforms/nestjs) |
 | [`@errtap/react-native`](./sdk-react-native) | React Native 0.72+, Expo | 0.4.1 | `npm i @errtap/react-native` | [React Native](https://docs.errtap.com/platforms/react-native) |
@@ -47,12 +47,12 @@ Create a project at [app.errtap.com](https://app.errtap.com) and copy its DSN fr
 
 ## Shared behaviour
 
-All SDKs follow the same rules:
+All SDKs follow these rules:
 
 - **Never break the host app.** A missing or invalid DSN turns the SDK into a no-op, and send failures are swallowed.
 - **Same DSN format.** `https://et_<key>@<host>/<project>`, or a bare `et_…` key together with an explicit `endpoint`.
 - **Idempotent sends.** Every request carries an `Idempotency-Key`, so retries are stored once.
-- **Back off on `429`.** SDKs honour `Retry-After` and drop new events while paused instead of queueing them.
+- **Don't retry into a rate limit.** No SDK retries a `429`. The browser, Node (and so Next.js and NestJS) and .NET SDKs also honour `Retry-After` and drop new events to that endpoint until it passes. Laravel and React Native treat a `429` as a failed send and don't pause; with `storage` set, React Native keeps a fatal crash it couldn't deliver and resends it on the next launch.
 - **Asynchronous ingest.** The API answers `202` once an event is queued; issues appear a moment later.
 
 ## Layout

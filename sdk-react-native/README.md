@@ -38,7 +38,7 @@ With Expo, expose the DSN through an `EXPO_PUBLIC_` variable. The DSN is a write
 - **Fatal errors in release builds.** React Native's handler ends the app, so the SDK holds it for up to 2 seconds while the report is sent. With `storage`, the report is saved first and re-sent on next launch if the app died before it went out. A report that did arrive is not stored twice.
 - **Unhandled promise rejections**, in production builds on Hermes only, through Hermes' rejection tracker. Other runtimes are not patched.
 
-Every event carries `platform: react-native` as a tag, and `os` / `osVersion` in its context. Events are tagged `fatal: true|false`; unhandled rejections are tagged `unhandledPromise: true`.
+Every event carries `platform: react-native` as a tag, and `os` / `osVersion` in its context. Errors caught by the global `ErrorUtils` handler are tagged `fatal: true|false`; unhandled rejections are tagged `unhandledPromise: true`. Manual `captureException` / `captureMessage` calls get no `fatal` tag unless you pass one.
 
 ## Configuration
 
@@ -119,7 +119,8 @@ Not applicable on devices. Use the backend SDKs or `POST /ingest/heartbeat/<toke
 
 - Each request carries an `Idempotency-Key` and times out after 10 seconds.
 - Non-fatal events are sent once, with no retry queue. Fatal events are persisted first when `storage` is set.
-- Payloads over 256 KB are truncated to the essentials.
+- A `429` doesn't pause later sends; the SDK has no client-side rate limit. A stored fatal report that got a `429` stays stored and is re-sent on the next launch.
+- Error messages longer than 2,000 characters are truncated by the SDK, and oversized payloads are trimmed to fit the server's field limits instead of being rejected. See [Limits](https://docs.errtap.com/api/limits).
 
 ## Troubleshooting
 

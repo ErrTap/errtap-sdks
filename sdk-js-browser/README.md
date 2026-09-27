@@ -35,14 +35,16 @@ After `init`, the SDK listens for `window` `error` and `unhandledrejection` even
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `dsn` | `string` | required | URL DSN (`https://et_<key>@<host>/<project>`), or a bare `et_…` key when `endpoint` is set |
-| `endpoint` | `string` | derived from the DSN | Full ingest URL override, e.g. `https://<host>/ingest/error`. Only needed for a bare key or a proxy |
+| `endpoint` | `string` | derived from the DSN | Full error-ingest URL override, e.g. `https://<host>/ingest/error`. Only needed for a bare key or a proxy (see below) |
 | `environment` | `string` | `'production'` | Environment name attached to every event, log and vital |
-| `release` | `string` | none | Release identifier. Enables regression detection, release health and source-map lookup |
+| `release` | `string` | none | Release identifier. Used for source-map lookup, release health and, once the release is registered, regression detection ([Releases](https://docs.errtap.com/concepts/releases)) |
 | `tags` | `Record<string, unknown>` | none | Tags attached to every event and log |
 | `vitals` | `boolean` | `true` | Report Core Web Vitals once per page view. Set `false` to turn it off |
 | `vitalsSampleRate` | `number` | `1` | Fraction of page views (0 to 1) that report vitals |
 
 If the DSN can't be parsed, the SDK becomes a no-op instead of throwing.
+
+`endpoint` only sets where errors go. Logs and vitals always go to `/ingest/log` and `/ingest/vitals` on the endpoint's origin, so a path prefix such as `https://example.com/errtap/ingest/error` is ignored for them. Feedback is sent to the endpoint with `/ingest/error` swapped for `/ingest/feedback`; if your `endpoint` doesn't end in `/ingest/error`, `captureFeedback` sends nothing.
 
 ## Capturing errors
 
@@ -164,7 +166,7 @@ To mark a deploy, `POST /ingest/release` with `{"version":"1.4.3","environment":
 - Network errors, timeouts and `5xx` are retried twice. Other `4xx` responses are not retried.
 - On `429`, the SDK pauses that endpoint for the `Retry-After` period and drops new events meanwhile.
 - Identical errors within 60 seconds are sent once, and each page sends at most 60 errors and 60 logs per minute, so a render loop can't burn your quota.
-- Payloads over 256 KB are truncated to the essentials instead of being rejected.
+- Error messages longer than 2,000 characters are truncated by the SDK, and oversized payloads are trimmed to fit the server's field limits instead of being rejected. See [Limits](https://docs.errtap.com/api/limits).
 
 ## Troubleshooting
 

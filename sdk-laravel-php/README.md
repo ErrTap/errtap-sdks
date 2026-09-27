@@ -15,7 +15,7 @@ The service provider is auto-discovered. Add your DSN to `.env`:
 
 ```dotenv
 ERRTAP_DSN=https://et_<key>@<host>/<project>
-ERRTAP_RELEASE=1.4.3   # optional, enables regression detection and release health
+ERRTAP_RELEASE=1.4.3   # optional, used for release health and regression detection
 ```
 
 Copy the DSN from **Project settings → Client keys**.
@@ -82,7 +82,7 @@ try {
 ErrTap::captureMessage('payment fallback used', ['level' => 'warning']);
 ```
 
-The second argument is merged into the event. Supported keys: `tags`, `context`, `user`, `level`, `fingerprint`, `url`, `release`, `environment`. Events carry the PHP version in their context.
+The second argument is merged into the event. Supported keys: `tags`, `context`, `user`, `level`, `fingerprint`, `url`, `release`, `environment`. Events carry `php` (the PHP version) and `sdk: laravel` in their context. Your `context` keys are merged over these, so a key of your own with the same name wins.
 
 ## Logs
 
@@ -129,12 +129,13 @@ ERRTAP_QUEUE_CONTROL_TOKEN=<upload-token>   # Project settings → Upload tokens
 - During HTTP requests, events are held and sent after the response has gone out (on `terminating`), so a slow or unreachable ErrTap never delays your users. A shutdown hook also flushes after fatal errors.
 - Console commands and queue workers send immediately.
 - Each request has a 2-second connect and 3-second total timeout. Network errors, `408` and `5xx` are retried twice; one flush never holds a worker longer than 5 seconds.
+- Other `4xx`, including `429`, count as a failed send and aren't retried. The SDK doesn't read `Retry-After` or pause later sends.
 - A single request holds at most 50 pending events.
 - Telemetry never throws into your application.
 
 ## Releases and source maps
 
-Set `ERRTAP_RELEASE` in each deploy. To mark a deploy from CI, POST to `/ingest/release` with an upload token:
+Set `ERRTAP_RELEASE` in each deploy. To mark a deploy from CI, POST to `/ingest/release` with an upload token (needs a plan with release health). Regression detection compares releases you've registered this way; see [Releases](https://docs.errtap.com/concepts/releases):
 
 ```bash
 curl -X POST https://<host>/ingest/release \

@@ -59,7 +59,7 @@ export class AppFilter extends ErrTapExceptionFilter {}
 | `dsn` | `string` | required | URL DSN, or a bare `et_…` key when `endpoint` is set |
 | `endpoint` | `string` | derived from the DSN | Full ingest URL override |
 | `environment` | `string` | `'production'` | Environment attached to every event and log |
-| `release` | `string` | none | Release identifier for regression detection and release health |
+| `release` | `string` | none | Release identifier for release health and, once the release is registered, regression detection |
 | `tags` | `Record<string, unknown>` | none | Tags attached to every event and log |
 | `exitOnFatal` | `boolean` | `true` | Exit with code 1 after reporting an uncaught exception. Nest registers no crash handler of its own, so the default keeps Node's crash-and-restart behaviour |
 
@@ -124,7 +124,7 @@ async nightly() {
 ## Requirements
 
 - `@nestjs/common` and `@nestjs/core` 10 or later (peer dependencies).
-- Node.js 18 or later.
+- The package is ES module only. Nest projects compile to CommonJS by default, and loading an ES module with `require()` needs Node.js 20.19+ or 22.12+. An ESM Nest project runs on Node.js 18 or later.
 
 ## Links
 

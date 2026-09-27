@@ -54,7 +54,7 @@ Middleware reports include the request path and query as `url`, and the HTTP met
 | `Dsn` | `string` | `""` | URL DSN, or a bare `et_…` key when `Endpoint` is set |
 | `Endpoint` | `string?` | derived from the DSN | Full ingest URL override, e.g. `https://<host>/ingest/error` |
 | `Environment` | `string` | `"production"` | Environment attached to every event and log |
-| `Release` | `string?` | none | Release identifier for regression detection and release health |
+| `Release` | `string?` | none | Release identifier for release health and, once the release is registered, regression detection |
 | `Tags` | `IDictionary<string, object?>?` | none | Tags attached to events and logs that don't set their own `tags` |
 
 If the DSN can't be resolved, the client is a no-op. `ErrTapClient.Enabled` tells you whether events will be sent.
@@ -137,10 +137,10 @@ await http.PostAsync(config["ErrTap:NightlyHeartbeatUrl"], null);
 ## Delivery behaviour
 
 - Sends run in the background and never block or throw into the request.
-- Each request carries an `Idempotency-Key` and uses a 5-second timeout (when the SDK owns the `HttpClient`).
+- Each request carries an `Idempotency-Key` and uses a 5-second timeout per request, including when you pass your own `HttpClient`.
 - Network errors, `408` and `5xx` are retried twice; other `4xx` are not.
 - On `429`, that endpoint is paused for the `Retry-After` period, at most one hour.
-- Errors and logs have separate budgets, so a noisy logger can't block error delivery.
+- The `429` pause and the cap of 100 unfinished requests apply per endpoint, so a paused or backed-up log endpoint doesn't stop error delivery. There is no client-side per-minute budget.
 
 ## Troubleshooting
 

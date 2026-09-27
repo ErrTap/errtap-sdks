@@ -37,11 +37,13 @@ After `init`, the SDK registers `uncaughtException` and `unhandledRejection` han
 | `dsn` | `string` | required | URL DSN (`https://et_<key>@<host>/<project>`), or a bare `et_…` key when `endpoint` is set |
 | `endpoint` | `string` | derived from the DSN | Full ingest URL override, e.g. `https://<host>/ingest/error` |
 | `environment` | `string` | `'production'` | Environment attached to every event and log |
-| `release` | `string` | none | Release identifier. Enables regression detection and release health |
+| `release` | `string` | none | Release identifier. Used for release health and, once the release is registered, regression detection ([Releases](https://docs.errtap.com/concepts/releases)) |
 | `tags` | `Record<string, unknown>` | none | Tags attached to every event and log |
 | `exitOnFatal` | `boolean` | `true` | Exit with code 1 after reporting an uncaught exception (see below) |
 
 If the DSN can't be parsed, the SDK becomes a no-op instead of throwing.
+
+`endpoint` only sets where errors go. Logs always go to `/ingest/log` on the endpoint's origin, ignoring any path prefix, and `captureFeedback` sends nothing unless the endpoint ends in `/ingest/error`.
 
 ### Fatal errors
 
@@ -69,7 +71,7 @@ try {
 captureMessage('stripe webhook skipped', { level: 'warning' });
 ```
 
-Both functions return a promise that resolves once the send finishes (they never reject). The second argument is merged into the event:
+Once the SDK is initialized, both functions return a promise that resolves when the send finishes (it never rejects). Before `init`, or when the DSN couldn't be parsed, they return `undefined`, so use `await` rather than `.then()`. The second argument is merged into the event:
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -147,8 +149,8 @@ The token in the URL authenticates the ping; no DSN header is needed.
 - Each request carries an `Idempotency-Key`; retries are stored once.
 - Requests time out after 10 seconds. Network errors, timeouts and `5xx` are retried twice; other `4xx` are not.
 - On `429`, the SDK pauses that endpoint for the `Retry-After` period and drops new events meanwhile.
-- Errors and logs have separate budgets, so a noisy logger can't block error delivery.
-- Payloads over 256 KB are truncated to the essentials instead of being rejected.
+- The `429` pause and the cap of 100 unfinished requests apply per endpoint, so a paused or backed-up log endpoint doesn't stop error delivery. There is no client-side per-minute budget; the server's per-project limits apply.
+- Error messages longer than 2,000 characters are truncated by the SDK, and oversized payloads are trimmed to fit the server's field limits instead of being rejected. See [Limits](https://docs.errtap.com/api/limits).
 
 ## Troubleshooting
 
@@ -159,8 +161,8 @@ The token in the URL authenticates the ping; no DSN header is needed.
 
 ## Requirements
 
-- Node.js 18 or later (uses the global `fetch`).
-- ES module package, with TypeScript definitions included.
+- Node.js 18 or later (uses the global `fetch`) when you `import` it.
+- ES module only, with TypeScript definitions included. There is no CommonJS build: loading it with `require()` needs Node.js 20.19+ or 22.12+, where `require(esm)` is enabled by default.
 
 ## Links
 
