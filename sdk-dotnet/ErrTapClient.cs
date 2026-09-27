@@ -116,18 +116,21 @@ public sealed class ErrTapClient : IDisposable
     private void SendError(Dictionary<string, object?> payload)
     {
         if (_endpoint is null) return;
+        var markers = new Dictionary<string, object?>
+        {
+            ["dotnet"] = Environment.Version.ToString(),
+            ["sdk"] = "dotnet",
+        };
         var context = MergeDict(
-            new Dictionary<string, object?>
-            {
-                ["dotnet"] = Environment.Version.ToString(),
-                ["sdk"] = "dotnet",
-            },
+            new Dictionary<string, object?>(markers),
             payload.TryGetValue("context", out var existing) && existing is IDictionary<string, object?> d ? d : null);
 
         payload.TryAdd("environment", _environment);
         payload.TryAdd("release", _release);
-        payload["tags"] = MergeTags(_tags, payload.GetValueOrDefault("tags"));
-        payload["context"] = context;
+        // one bag over the backend's metadata cap gets the whole event a 400, so drop just that bag
+        payload["tags"] = FitBag(MergeTags(_tags, payload.GetValueOrDefault("tags")));
+        payload["context"] = FitBag(context) ?? markers;
+        if (payload.TryGetValue("user", out var user)) payload["user"] = FitBag(user);
 
         PostJson(_endpoint!, payload);
     }
@@ -243,6 +246,23 @@ public sealed class ErrTapClient : IDisposable
             foreach (System.Collections.DictionaryEntry e in d)
                 if (e.Key?.ToString() is { } key) merged[key] = e.Value;
         return merged;
+    }
+
+    // MAX_INGEST_METADATA_BYTES in backend/src/ingestion/limits.ts: UTF-8 bytes of the JSON, per bag
+    private const int MetadataMaxBytes = 32 * 1024;
+
+    /// <summary>The bag, or null when its JSON would exceed the backend's metadata cap.</summary>
+    private static object? FitBag(object? bag)
+    {
+        if (bag is null) return null;
+        try
+        {
+            return System.Text.Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(bag, JsonOpts)) <= MetadataMaxBytes ? bag : null;
+        }
+        catch
+        {
+            return null; // unserializable: PostJson would drop the whole event anyway
+        }
     }
 
     private static string Truncate(string s, int max) =>

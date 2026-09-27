@@ -9,6 +9,7 @@ await PausesAfterRateLimit();
 await CapsSendsInFlight();
 await LogRateLimitDoesNotPauseErrors();
 await EventTagsMergeWithConfiguredTags();
+await OversizedMetadataIsDroppedNotTheEvent();
 
 Console.WriteLine("ErrTap .NET transport tests passed");
 
@@ -150,6 +151,28 @@ static async Task EventTagsMergeWithConfiguredTags()
     var third = JsonDocument.Parse(handler.Bodies[2]).RootElement.GetProperty("tags");
     Assert(third.GetProperty("tenant").GetString() == "acme", "Dictionary<string, string> tags must be sent");
     Assert(third.GetProperty("team").GetString() == "payments", "configured tags must merge with typed tags");
+}
+
+static async Task OversizedMetadataIsDroppedNotTheEvent()
+{
+    var handler = new RecordingHandler(_ => new HttpResponseMessage(HttpStatusCode.Accepted));
+    using var http = new HttpClient(handler);
+    using var client = NewClient(http);
+
+    // 12,000 CJK characters are 36,000 UTF-8 bytes: over the backend's 32KB per-bag cap
+    client.CaptureMessage("big context", new Dictionary<string, object?>
+    {
+        ["context"] = new Dictionary<string, object?> { ["notes"] = new string('中', 12_000) },
+        ["tags"] = new Dictionary<string, object?> { ["route"] = "/checkout" },
+    });
+    await client.FlushAsync();
+
+    var body = JsonDocument.Parse(handler.Bodies[0]).RootElement;
+    Assert(body.GetProperty("message").GetString() == "big context", "the event must still be sent");
+    var context = body.GetProperty("context");
+    Assert(!context.TryGetProperty("notes", out _), "an over-cap context must be dropped");
+    Assert(context.GetProperty("sdk").GetString() == "dotnet", "SDK markers remain when the caller context is dropped");
+    Assert(body.GetProperty("tags").GetProperty("route").GetString() == "/checkout", "bags under the cap are untouched");
 }
 
 static ErrTapClient NewClient(HttpClient http) => new(
