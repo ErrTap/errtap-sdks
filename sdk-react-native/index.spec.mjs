@@ -119,3 +119,26 @@ test('fields are cut to the backend DTO caps so the event is not rejected', asyn
   assert.ok(fallback.message.length <= 2000);
   assert.ok(fallback.environment.length <= 100);
 });
+
+test('without TextEncoder, non-ASCII context is still measured in UTF-8 bytes', async () => {
+  // Hermes before React Native 0.74 has no TextEncoder; counting .length there would let a
+  // context of 12,000 CJK characters (36,000 bytes) through, and the backend would 400 it.
+  const encoder = globalThis.TextEncoder;
+  delete globalThis.TextEncoder;
+  try {
+    const bodies = [];
+    globalThis.fetch = async (_url, req) => {
+      bodies.push(JSON.parse(req.body));
+      return { ok: true, status: 202 };
+    };
+    init();
+    sdk.captureMessage('over', { context: { notes: '中'.repeat(12_000) } });
+    // well under the cap: the SDK also adds breadcrumbs to context
+    sdk.captureMessage('under', { context: { notes: '中'.repeat(4_000) } });
+    await tick(20);
+    assert.equal(bodies[0].context, undefined); // 36,000 bytes > 32KB
+    assert.equal(bodies[1].context.notes.length, 4_000); // 12,000 bytes fits
+  } finally {
+    globalThis.TextEncoder = encoder;
+  }
+});

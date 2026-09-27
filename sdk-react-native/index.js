@@ -174,8 +174,19 @@ function stringifySafely(value) {
   }
 }
 
-function byteLength(value) {
-  return typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(value).byteLength : value.length;
+/** UTF-8 byte length, as the backend measures it. Exact without TextEncoder too
+ *  (Hermes before React Native 0.74 has none); `.length` would undercount non-ASCII. */
+function byteLength(s) {
+  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(s).byteLength;
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c < 0xdc00 && i + 1 < s.length) { n += 4; i++; } // surrogate pair
+    else n += 3;
+  }
+  return n;
 }
 
 /** Cut every field to its backend cap; a metadata bag over its cap is dropped whole. */
