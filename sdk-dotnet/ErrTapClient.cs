@@ -126,7 +126,11 @@ public sealed class ErrTapClient : IDisposable
 
         payload.TryAdd("environment", _environment);
         payload.TryAdd("release", _release);
-        payload.TryAdd("tags", _tags);
+        // configured tags first, per-event tags win on the same key; a fresh dictionary so
+        // one event's tags never leak into _tags or later events
+        var eventTags = payload.TryGetValue("tags", out var t) && t is IDictionary<string, object?> et ? et : null;
+        if (_tags is not null || eventTags is not null)
+            payload["tags"] = MergeDict(new Dictionary<string, object?>(_tags ?? new Dictionary<string, object?>()), eventTags);
         payload["context"] = context;
 
         PostJson(_endpoint!, payload);
