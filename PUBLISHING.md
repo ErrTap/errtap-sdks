@@ -24,7 +24,7 @@ Current release candidates:
 | `@errtap/next` | `0.5.2` (published) |
 | `@errtap/react-native` | `0.4.2` (cuts fields to the ingest DTO caps, e.g. error messages to 2000 chars) |
 | `errtap/laravel` | `v0.3.1` (`v0.3.0` published; next tag adds the `ext-curl` requirement, cuts fields to the ingest DTO caps, and keeps SDK context markers and configured tags when a capture passes its own) |
-| `ErrTap` | `0.2.2` (`0.2.1` published; fixes configured tags being dropped) |
+| `ErrTap` | `0.2.2` (`0.2.1` published; fixes configured tags being dropped, drops over-cap metadata instead of the event) |
 
 > **No build step.** The npm packages ship the hand-written files declared in each package's
 > `files` field as-is.
