@@ -126,11 +126,7 @@ public sealed class ErrTapClient : IDisposable
 
         payload.TryAdd("environment", _environment);
         payload.TryAdd("release", _release);
-        // configured tags first, per-event tags win on the same key; a fresh dictionary so
-        // one event's tags never leak into _tags or later events
-        var eventTags = payload.TryGetValue("tags", out var t) && t is IDictionary<string, object?> et ? et : null;
-        if (_tags is not null || eventTags is not null)
-            payload["tags"] = MergeDict(new Dictionary<string, object?>(_tags ?? new Dictionary<string, object?>()), eventTags);
+        payload["tags"] = MergeTags(_tags, payload.GetValueOrDefault("tags"));
         payload["context"] = context;
 
         PostJson(_endpoint!, payload);
@@ -230,6 +226,23 @@ public sealed class ErrTapClient : IDisposable
         foreach (var (k, v) in b)
             a[k] = v;
         return a;
+    }
+
+    /// <summary>
+    /// Configured tags plus per-event tags, per-event winning on the same key. Builds a fresh
+    /// dictionary so one event's tags never leak into the configured set or later events.
+    /// Any dictionary shape merges (<c>Dictionary&lt;string, string&gt;</c> included); a non-dictionary
+    /// value, such as an anonymous object, can't be merged and is sent as the caller gave it.
+    /// </summary>
+    private static object? MergeTags(IDictionary<string, object?>? configured, object? eventTags)
+    {
+        if (eventTags is not null and not System.Collections.IDictionary) return eventTags;
+        if (configured is null && eventTags is null) return null;
+        var merged = configured is null ? new Dictionary<string, object?>() : new Dictionary<string, object?>(configured);
+        if (eventTags is System.Collections.IDictionary d)
+            foreach (System.Collections.DictionaryEntry e in d)
+                if (e.Key?.ToString() is { } key) merged[key] = e.Value;
+        return merged;
     }
 
     private static string Truncate(string s, int max) =>

@@ -140,6 +140,16 @@ static async Task EventTagsMergeWithConfiguredTags()
     var second = JsonDocument.Parse(handler.Bodies[1]).RootElement.GetProperty("tags");
     Assert(!second.TryGetProperty("method", out _), "one event's tags must not leak into later events");
     Assert(second.GetProperty("region").GetString() == "eu", "configured tags must stay unchanged after a capture");
+
+    // callers commonly pass string-typed dictionaries; they must merge, not be dropped
+    client.CaptureMessage("typed tags", new Dictionary<string, object?>
+    {
+        ["tags"] = new Dictionary<string, string> { ["tenant"] = "acme" },
+    });
+    await client.FlushAsync();
+    var third = JsonDocument.Parse(handler.Bodies[2]).RootElement.GetProperty("tags");
+    Assert(third.GetProperty("tenant").GetString() == "acme", "Dictionary<string, string> tags must be sent");
+    Assert(third.GetProperty("team").GetString() == "payments", "configured tags must merge with typed tags");
 }
 
 static ErrTapClient NewClient(HttpClient http) => new(
