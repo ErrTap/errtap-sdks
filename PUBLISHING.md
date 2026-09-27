@@ -18,13 +18,13 @@ Current release candidates:
 
 | Package | Version |
 |---|---|
-| `@errtap/browser` | `0.4.1` |
+| `@errtap/browser` | `0.5.0` (published) |
 | `@errtap/node` | `0.4.1` |
 | `@errtap/nestjs` | `0.4.1` |
-| `@errtap/next` | `0.5.1` |
+| `@errtap/next` | `0.5.2` (published) |
 | `@errtap/react-native` | `0.4.1` |
-| `errtap/laravel` | `v0.2.0` (published) |
-| `ErrTap` | `0.2.1` |
+| `errtap/laravel` | `v0.3.1` (`v0.3.0` published; next tag adds the `ext-curl` requirement) |
+| `ErrTap` | `0.2.2` (`0.2.1` published; fixes configured tags being dropped) |
 
 > **No build step.** The npm packages ship the hand-written files declared in each package's
 > `files` field as-is.
