@@ -11,6 +11,15 @@ let recentErrors = new Map();
 // separate ingest windows: a chatty logger must never starve error delivery.
 let minuteWindows = new Map(); // kind → { start, count }
 const PAYLOAD_MAX_BYTES = 256 * 1024;
+// Field caps from the backend DTOs (backend/src/ingestion/ingestion.controller.ts and
+// limits.ts). One field over its cap gets the whole event a 400, which is never retried,
+// so the SDK must cut to fit rather than lose the event.
+const ERROR_MESSAGE_MAX = 2000; // ErrorEventDto.message
+const LOG_MESSAGE_MAX = 8192; // LogEventDto.message
+const FEEDBACK_MESSAGE_MAX = 5000; // FeedbackDto.message
+const STACKTRACE_MAX = 32_768; // under ErrorEventDto.stacktrace's 50,000
+const FIELD_MAX = { environment: 100, release: 100, level: 50, type: 200, url: 2000, fingerprint: 200, name: 200, email: 320, eventId: 200 };
+const METADATA_MAX_BYTES = 32 * 1024; // MAX_INGEST_METADATA_BYTES, per tags/context/user
 const TRANSPORT_TIMEOUT_MS = 10_000;
 const TRANSPORT_RETRIES = 2;
 const RETRY_AFTER_DEFAULT_MS = 60_000; // the backend's rate windows are per minute
@@ -204,19 +213,39 @@ function stringifySafely(value) {
   }
 }
 
-function serializePayload(body) {
+/** Cut every field to its backend cap; a metadata bag over its cap is dropped whole. */
+function capFields(body) {
+  const out = { ...body };
+  for (const [key, max] of Object.entries(FIELD_MAX)) {
+    if (typeof out[key] === 'string') out[key] = out[key].slice(0, max);
+  }
+  if (typeof out.stacktrace === 'string') out.stacktrace = out.stacktrace.slice(0, STACKTRACE_MAX);
+  for (const key of ['tags', 'context', 'user']) {
+    if (out[key] == null) continue;
+    const json = stringifySafely(out[key]);
+    if (json === null || jsonBytes(json) > METADATA_MAX_BYTES) {
+      delete out[key];
+      out.truncated = true;
+    }
+  }
+  return out;
+}
+
+// Callers cap `message` to their own endpoint's limit before this.
+function serializePayload(payload) {
+  const body = capFields(payload);
   const json = stringifySafely(body);
   if (json === null || jsonBytes(json) <= PAYLOAD_MAX_BYTES) return json;
 
   // Keep a valid, useful envelope instead of cutting a JSON string mid-value.
   return stringifySafely({
-    environment: typeof body.environment === 'string' ? body.environment.slice(0, 256) : undefined,
-    release: typeof body.release === 'string' ? body.release.slice(0, 512) : undefined,
-    level: typeof body.level === 'string' ? body.level.slice(0, 64) : undefined,
-    type: typeof body.type === 'string' ? body.type.slice(0, 512) : undefined,
-    message: String(body.message ?? '').slice(0, 4096),
+    environment: body.environment,
+    release: body.release,
+    level: body.level,
+    type: body.type,
+    message: String(body.message ?? ''),
     stacktrace: typeof body.stacktrace === 'string' ? body.stacktrace.slice(0, 8192) : undefined,
-    url: typeof body.url === 'string' ? body.url.slice(0, 2048) : undefined,
+    url: body.url,
     truncated: true,
     originalBytes: jsonBytes(json),
   });
@@ -232,12 +261,7 @@ function buildEnvelope(payload) {
     tags: mergeTags(cfg.tags, runtime.tags, payload.tags),
     context: mergeContext(runtime.context, payload.context),
   };
-  if (typeof body.message === 'string' && body.message.length > 8192) {
-    body.message = body.message.slice(0, 8192);
-  }
-  if (typeof body.stacktrace === 'string' && body.stacktrace.length > 32_768) {
-    body.stacktrace = body.stacktrace.slice(0, 32_768);
-  }
+  body.message = String(body.message ?? '').slice(0, ERROR_MESSAGE_MAX);
   return serializePayload(body);
 }
 
@@ -340,7 +364,7 @@ export function captureFeedback(feedback) {
   if (endpoint === cfg.endpoint) return Promise.resolve(); // custom endpoint: no feedback route to derive
   const pageUrl = typeof location !== 'undefined' ? location.href : undefined;
   const body = serializePayload({
-    message: String(feedback.message).slice(0, 5000),
+    message: String(feedback.message).slice(0, FEEDBACK_MESSAGE_MAX),
     name: feedback.name,
     email: feedback.email,
     url: feedback.url ?? pageUrl,
@@ -373,7 +397,7 @@ function sendLog(level, message, data) {
   const body = serializePayload({
     ...runtime,
     level,
-    message: String(message).slice(0, 8192),
+    message: String(message).slice(0, LOG_MESSAGE_MAX),
     environment: cfg.environment,
     release: cfg.release,
     tags: mergeTags(cfg.tags, runtime.tags),

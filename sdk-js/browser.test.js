@@ -61,7 +61,9 @@ describe('browser send limits', () => {
     await withFetch(async (calls) => {
       init({ dsn: 'et_test', endpoint: 'https://example.test/ingest/error' });
       await captureException(new Error('small'));
-      await captureException(new Error('large'), { context: { blob: 'x'.repeat(100 * 1024) } });
+      // each bag stays under the backend's 32KB metadata cap; together they pass 64KB
+      const blob = () => ({ blob: 'x'.repeat(30 * 1024) });
+      await captureException(new Error('large'), { context: blob(), tags: blob(), user: blob() });
       assert.equal(calls[0].keepalive, true);
       assert.equal(calls[1].keepalive, false);
     });

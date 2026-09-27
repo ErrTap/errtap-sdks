@@ -96,3 +96,26 @@ test('captureException accepts whatever was thrown', () => {
   init();
   for (const thrown of [null, undefined, 'text', 7]) assert.doesNotThrow(() => sdk.captureException(thrown));
 });
+
+test('fields are cut to the backend DTO caps so the event is not rejected', async () => {
+  const bodies = [];
+  globalThis.fetch = async (_url, req) => {
+    bodies.push(JSON.parse(req.body));
+    return { ok: true, status: 202 };
+  };
+  init({ environment: 'e'.repeat(300) });
+  sdk.logger.info('l'.repeat(10_000));
+  sdk.captureException(new Error('m'.repeat(10_000)), { stacktrace: 's'.repeat(60_000), context: { big: 'c'.repeat(40 * 1024) } });
+  // an unknown field the caps cannot trim forces the oversize fallback envelope
+  sdk.captureMessage('f'.repeat(10_000), { extra: 'x'.repeat(300_000) });
+  await tick(20);
+
+  const [log, error, fallback] = bodies;
+  assert.equal(log.message.length, 8192); // LogEventDto.message
+  assert.equal(error.message.length, 2000); // ErrorEventDto.message
+  assert.ok(error.stacktrace.length <= 50_000);
+  assert.equal(error.context, undefined); // over the 32KB metadata cap
+  assert.equal(fallback.truncated, true);
+  assert.ok(fallback.message.length <= 2000);
+  assert.ok(fallback.environment.length <= 100);
+});
