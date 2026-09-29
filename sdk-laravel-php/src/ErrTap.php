@@ -210,14 +210,15 @@ class ErrTap
         if (!$cfg || empty($cfg['logEndpoint'])) {
             return;
         }
+        $markers = ['php' => PHP_VERSION, 'sdk' => 'laravel'];
         self::postJson($cfg['logEndpoint'], [
             'level' => $level,
             'message' => mb_substr($message, 0, 8192),
             'environment' => $cfg['environment'] ?? 'production',
             'release' => $cfg['release'] ?? null,
-            'tags' => $cfg['tags'] ?? null,
-            'url' => $_SERVER['REQUEST_URI'] ?? null,
-            'context' => array_merge(['php' => PHP_VERSION, 'sdk' => 'laravel'], $data),
+            'tags' => self::fitBag($cfg['tags'] ?? null),
+            'url' => isset($_SERVER['REQUEST_URI']) ? mb_substr($_SERVER['REQUEST_URI'], 0, self::URL_MAX) : null,
+            'context' => self::fitBag(array_merge($markers, $data)) ?? $markers,
         ]);
     }
 
@@ -254,6 +255,7 @@ class ErrTap
         if ($timeMs >= (float) self::$cfg['slowQueryMs']) {
             self::sendError([
                 'message' => $sql,
+                'context' => self::sqlContext($sql),
                 'type' => 'SlowDbQuery',
                 'level' => 'warning',
                 'fingerprint' => 'slow-query:' . md5($sql),
@@ -280,6 +282,7 @@ class ErrTap
             if ($n >= (int) self::$cfg['n1Threshold']) {
                 self::sendError([
                     'message' => $sql,
+                    'context' => self::sqlContext($sql),
                     'type' => 'NPlusOneQuery',
                     'level' => 'warning',
                     'fingerprint' => 'n-plus-one:' . md5($sql),
@@ -290,6 +293,26 @@ class ErrTap
         }
     }
 
+    // Field caps from the backend ErrorEventDto (backend/src/ingestion/ingestion.controller.ts
+    // and limits.ts). One field over its cap gets the event a 400, which is never retried.
+    private const MESSAGE_MAX = 2000;
+    private const STACKTRACE_MAX = 50000;
+    private const URL_MAX = 2000;
+    private const METADATA_MAX_BYTES = 32768; // per tags/context/user, JSON-encoded
+
+    /** A statement longer than the message cap still reaches the dashboard whole-ish. */
+    private static function sqlContext(string $sql): ?array
+    {
+        return mb_strlen($sql) > self::MESSAGE_MAX ? ['sql' => mb_strcut($sql, 0, 16384)] : null;
+    }
+
+    /** Null when the bag's JSON would exceed the backend's metadata cap. */
+    private static function fitBag($bag)
+    {
+        $json = json_encode($bag, JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR);
+        return $json !== false && strlen($json) <= self::METADATA_MAX_BYTES ? $bag : null;
+    }
+
     private static function sendError(array $payload): void
     {
         $cfg = self::$cfg;
@@ -297,12 +320,30 @@ class ErrTap
             return;
         }
 
-        self::postJson($cfg['endpoint'], array_merge([
+        $markers = ['php' => PHP_VERSION, 'sdk' => 'laravel'];
+        // Per-event keys win; the SDK markers and configured tags survive a caller's own.
+        $tags = $payload['tags'] ?? $cfg['tags'] ?? null;
+        if (is_array($payload['tags'] ?? null)) {
+            $tags = ($payload['tags'] + (array) ($cfg['tags'] ?? [])) ?: null;
+        }
+        $event = array_merge([
             'environment' => $cfg['environment'] ?? 'production',
             'release' => $cfg['release'] ?? null,
-            'tags' => $cfg['tags'] ?? null,
-            'context' => ['php' => PHP_VERSION, 'sdk' => 'laravel'],
-        ], $payload));
+        ], $payload, [
+            'message' => mb_substr((string) ($payload['message'] ?? ''), 0, self::MESSAGE_MAX),
+            'tags' => self::fitBag($tags),
+            'context' => self::fitBag((is_array($payload['context'] ?? null) ? $payload['context'] : []) + $markers) ?? $markers,
+        ]);
+        if (is_string($event['stacktrace'] ?? null)) {
+            $event['stacktrace'] = mb_substr($event['stacktrace'], 0, self::STACKTRACE_MAX);
+        }
+        if (is_string($event['url'] ?? null)) {
+            $event['url'] = mb_substr($event['url'], 0, self::URL_MAX);
+        }
+        if (isset($event['user'])) {
+            $event['user'] = self::fitBag($event['user']);
+        }
+        self::postJson($cfg['endpoint'], $event);
     }
 
     // Network errors, 408 and 5xx are worth retrying. 4xx aren't: 401 (revoked DSN),

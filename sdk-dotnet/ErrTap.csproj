@@ -7,7 +7,7 @@
     <RootNamespace>ErrTap</RootNamespace>
     <AssemblyName>ErrTap</AssemblyName>
     <PackageId>ErrTap</PackageId>
-    <Version>0.2.1</Version>
+    <Version>0.2.2</Version>
     <Authors>ErrTap</Authors>
     <Description>ErrTap error tracking for ASP.NET Core — reports unhandled exceptions to your ErrTap project.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>

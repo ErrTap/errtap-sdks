@@ -8,6 +8,8 @@ await SerializationFailuresStayInsideTheSdk();
 await PausesAfterRateLimit();
 await CapsSendsInFlight();
 await LogRateLimitDoesNotPauseErrors();
+await EventTagsMergeWithConfiguredTags();
+await OversizedMetadataIsDroppedNotTheEvent();
 
 Console.WriteLine("ErrTap .NET transport tests passed");
 
@@ -109,6 +111,68 @@ static async Task LogRateLimitDoesNotPauseErrors()
     await client.FlushAsync();
 
     Assert(handler.Attempts == 2, "a 429 on the log endpoint must not pause error delivery");
+}
+
+static async Task EventTagsMergeWithConfiguredTags()
+{
+    var handler = new RecordingHandler(_ => new HttpResponseMessage(HttpStatusCode.Accepted));
+    using var http = new HttpClient(handler);
+    using var client = new ErrTapClient(
+        new ErrTapOptions
+        {
+            Dsn = "et_test",
+            Endpoint = "https://example.invalid/ingest/error",
+            Tags = new Dictionary<string, object?> { ["team"] = "payments", ["region"] = "eu" },
+        },
+        http);
+
+    // what ErrTapMiddleware sends: its own tags on every captured request exception
+    client.CaptureException(new InvalidOperationException("boom"), new Dictionary<string, object?>
+    {
+        ["tags"] = new Dictionary<string, object?> { ["method"] = "GET", ["region"] = "us" },
+    });
+    client.CaptureMessage("no event tags");
+    await client.FlushAsync();
+
+    var first = JsonDocument.Parse(handler.Bodies[0]).RootElement.GetProperty("tags");
+    Assert(first.GetProperty("team").GetString() == "payments", "configured tags must survive per-event tags");
+    Assert(first.GetProperty("method").GetString() == "GET", "per-event tags must be sent");
+    Assert(first.GetProperty("region").GetString() == "us", "a per-event tag overrides a configured tag with the same key");
+    var second = JsonDocument.Parse(handler.Bodies[1]).RootElement.GetProperty("tags");
+    Assert(!second.TryGetProperty("method", out _), "one event's tags must not leak into later events");
+    Assert(second.GetProperty("region").GetString() == "eu", "configured tags must stay unchanged after a capture");
+
+    // callers commonly pass string-typed dictionaries; they must merge, not be dropped
+    client.CaptureMessage("typed tags", new Dictionary<string, object?>
+    {
+        ["tags"] = new Dictionary<string, string> { ["tenant"] = "acme" },
+    });
+    await client.FlushAsync();
+    var third = JsonDocument.Parse(handler.Bodies[2]).RootElement.GetProperty("tags");
+    Assert(third.GetProperty("tenant").GetString() == "acme", "Dictionary<string, string> tags must be sent");
+    Assert(third.GetProperty("team").GetString() == "payments", "configured tags must merge with typed tags");
+}
+
+static async Task OversizedMetadataIsDroppedNotTheEvent()
+{
+    var handler = new RecordingHandler(_ => new HttpResponseMessage(HttpStatusCode.Accepted));
+    using var http = new HttpClient(handler);
+    using var client = NewClient(http);
+
+    // 12,000 CJK characters are 36,000 UTF-8 bytes: over the backend's 32KB per-bag cap
+    client.CaptureMessage("big context", new Dictionary<string, object?>
+    {
+        ["context"] = new Dictionary<string, object?> { ["notes"] = new string('中', 12_000) },
+        ["tags"] = new Dictionary<string, object?> { ["route"] = "/checkout" },
+    });
+    await client.FlushAsync();
+
+    var body = JsonDocument.Parse(handler.Bodies[0]).RootElement;
+    Assert(body.GetProperty("message").GetString() == "big context", "the event must still be sent");
+    var context = body.GetProperty("context");
+    Assert(!context.TryGetProperty("notes", out _), "an over-cap context must be dropped");
+    Assert(context.GetProperty("sdk").GetString() == "dotnet", "SDK markers remain when the caller context is dropped");
+    Assert(body.GetProperty("tags").GetProperty("route").GetString() == "/checkout", "bags under the cap are untouched");
 }
 
 static ErrTapClient NewClient(HttpClient http) => new(

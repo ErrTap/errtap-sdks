@@ -1,6 +1,6 @@
 {
   "name": "@errtap/react-native",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "ErrTap React Native error tracking SDK",
   "type": "module",
   "main": "index.js",

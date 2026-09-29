@@ -22,6 +22,58 @@ describe('sdk core transport', () => {
     }
   });
 
+  it('cuts fields to the backend DTO caps so the event is not rejected', async () => {
+    const originalFetch = globalThis.fetch;
+    const bodies = [];
+    globalThis.fetch = async (_url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return { ok: true };
+    };
+    try {
+      configure({ dsn: 'et_test', endpoint: 'https://example.test/ingest/error' });
+      await captureException(new Error('m'.repeat(10_000)), {
+        stacktrace: 's'.repeat(60_000),
+        url: 'https://example.test/?' + 'q'.repeat(3000),
+        context: { big: 'c'.repeat(40 * 1024) },
+      });
+      await logger.info('l'.repeat(10_000));
+
+      const [error, log] = bodies;
+      assert.equal(error.message.length, 2000); // ErrorEventDto.message
+      assert.ok(error.stacktrace.length <= 50_000);
+      assert.equal(error.url.length, 2000);
+      assert.equal(error.context, undefined); // over the 32KB metadata cap
+      assert.equal(log.message.length, 8192); // LogEventDto.message
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('keeps the oversize fallback envelope within the backend field caps', async () => {
+    const originalFetch = globalThis.fetch;
+    let body;
+    globalThis.fetch = async (_url, init) => {
+      body = JSON.parse(init.body);
+      return { ok: true };
+    };
+    try {
+      configure({ dsn: 'et_test', endpoint: 'https://example.test/ingest/error', environment: 'e'.repeat(300), release: 'r'.repeat(600) });
+      const error = new Error('m'.repeat(10_000));
+      error.name = 'T'.repeat(600);
+      // an unknown field the size caps cannot trim forces the fallback envelope
+      await captureException(error, { extra: 'x'.repeat(300_000), url: 'u'.repeat(3000) });
+
+      assert.equal(body.truncated, true);
+      assert.ok(body.message.length <= 2000);
+      assert.ok(body.environment.length <= 100);
+      assert.ok(body.release.length <= 100);
+      assert.ok(body.type.length <= 200);
+      assert.ok(body.url.length <= 2000);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('never throws circular context into the host application', async () => {
     const originalFetch = globalThis.fetch;
     let request;

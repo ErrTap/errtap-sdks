@@ -7,6 +7,14 @@ let rejectionHandlerInstalled = false;
 const breadcrumbs = [];
 const BREADCRUMB_MAX = 20;
 const PAYLOAD_MAX_BYTES = 256 * 1024;
+// Field caps from the backend DTOs (backend/src/ingestion/ingestion.controller.ts and
+// limits.ts). One field over its cap gets the whole event a 400, which is never retried,
+// so the SDK must cut to fit rather than lose the event. Mirrors sdk/sdk-js/core.js.
+const ERROR_MESSAGE_MAX = 2000; // ErrorEventDto.message
+const LOG_MESSAGE_MAX = 8192; // LogEventDto.message
+const STACKTRACE_MAX = 32_768; // under ErrorEventDto.stacktrace's 50,000
+const FIELD_MAX = { environment: 100, release: 100, level: 50, type: 200, url: 2000, fingerprint: 200 };
+const METADATA_MAX_BYTES = 32 * 1024; // MAX_INGEST_METADATA_BYTES, per tags/context/user
 const SEND_TIMEOUT_MS = 10_000;
 // A fatal JS error gets this long to reach ErrTap (or storage) before React
 // Native's own handler, which ends a release build, is allowed to run.
@@ -166,20 +174,53 @@ function stringifySafely(value) {
   }
 }
 
-function byteLength(value) {
-  return typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(value).byteLength : value.length;
+/** UTF-8 byte length, as the backend measures it. Exact without TextEncoder too
+ *  (Hermes before React Native 0.74 has none); `.length` would undercount non-ASCII. */
+function byteLength(s) {
+  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(s).byteLength;
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c < 0xdc00 && i + 1 < s.length) { n += 4; i++; } // surrogate pair
+    else n += 3;
+  }
+  return n;
 }
 
-/** Circular- and BigInt-safe, capped at the backend's size limit; null if unserializable. */
-function serialize(body) {
+/** Cut every field to its backend cap; a metadata bag over its cap is dropped whole. */
+function capFields(body) {
+  const out = { ...body };
+  for (const [key, max] of Object.entries(FIELD_MAX)) {
+    if (typeof out[key] === 'string') out[key] = out[key].slice(0, max);
+  }
+  if (typeof out.stacktrace === 'string') out.stacktrace = out.stacktrace.slice(0, STACKTRACE_MAX);
+  for (const key of ['tags', 'context', 'user']) {
+    if (out[key] == null) continue;
+    const json = stringifySafely(out[key]);
+    if (json === null || byteLength(json) > METADATA_MAX_BYTES) {
+      delete out[key];
+      out.truncated = true;
+    }
+  }
+  return out;
+}
+
+/**
+ * Circular- and BigInt-safe, capped at the backend's size limits; null if unserializable.
+ * Callers cap `message` to their own endpoint's limit before this.
+ */
+function serialize(payload) {
+  const body = capFields(payload);
   const json = stringifySafely(body);
   if (json === null || byteLength(json) <= PAYLOAD_MAX_BYTES) return json;
   return stringifySafely({
     environment: body.environment,
     release: body.release,
     level: body.level,
-    type: typeof body.type === 'string' ? body.type.slice(0, 512) : undefined,
-    message: String(body.message ?? '').slice(0, 4096),
+    type: body.type,
+    message: String(body.message ?? ''),
     stacktrace: typeof body.stacktrace === 'string' ? body.stacktrace.slice(0, 8192) : undefined,
     tags: body.tags,
     truncated: true,
@@ -234,6 +275,7 @@ function errorBody(payload) {
     environment: cfg.environment,
     release: cfg.release,
     ...rest,
+    message: String(rest.message ?? '').slice(0, ERROR_MESSAGE_MAX),
     tags: { platform: 'react-native', ...cfg.tags, ...(pTags || {}) },
     context: { ...platformContext(), ...(pCtx || {}) },
   });
@@ -296,7 +338,7 @@ function sendLog(level, message, data) {
     pushBreadcrumb(level, message, data);
     const body = serialize({
       level,
-      message: String(message).slice(0, 8192),
+      message: String(message).slice(0, LOG_MESSAGE_MAX),
       environment: cfg.environment,
       release: cfg.release,
       tags: { platform: 'react-native', ...cfg.tags },
